@@ -16,6 +16,8 @@ along with this program. If not, see <http://www.gnu.org/licenses>. */
 package org.mazurov.jdbe;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import static org.mazurov.jdbe.ERIPC.ipc_log;
 
 public class IPCIO {
@@ -97,8 +99,14 @@ public class IPCIO {
             cancelImmediate = false;
         }
 
+        // Mirrors native's IPCrequest::read (ipcio.cc:72-81): a loop of size getc(stdin)
+        // calls that always fills the whole buffer. InputStream.read(byte[]) makes no
+        // such guarantee -- over a pipe it commonly returns as soon as whatever bytes
+        // have arrived so far are consumed, which can be fewer than buf.length for any
+        // request body larger than one pipe chunk, silently corrupting the rest of the
+        // request. readNBytes loops internally until the buffer is full or EOF.
         void read() throws IOException {
-            System.in.read(buf);
+            System.in.readNBytes(buf, 0, buf.length);
         }
 
         int readByte() throws IOException {
@@ -149,7 +157,9 @@ public class IPCIO {
             for (int i = 0; i < bytes.length; ++i) {
                 bytes[i] = buf[idx++];
             }
-            return new String(bytes);
+            // Matches the write side's explicit UTF-8 encoding (sendSVal) rather than
+            // relying on the platform default charset.
+            return new String(bytes, StandardCharsets.UTF_8);
         }
 
         double readDVal() throws IOException {
@@ -495,10 +505,32 @@ public class IPCIO {
             responseStatus = s;
         }
 
+        // Mirrors native's IPCresponse::print (ipcio.cc:875-890): native writes both the
+        // header and payload with raw write(2) syscalls directly on fd 1, which have no
+        // userspace buffering to worry about. Java's System.out is a buffered
+        // PrintStream that only autoflushes on an embedded '\n' byte -- hex-encoded
+        // headers/payloads rarely contain one, so without an explicit flush here, ACK/
+        // HANDSHAKE/PROGRESS responses can sit in the buffer indefinitely while this
+        // process blocks reading the GUI's next request, and the GUI blocks waiting for
+        // bytes that never arrive (a protocol deadlock on the very first handshake).
+        // Mirrors native's IPCresponse::print (ipcio.cc:875-890): the response body is a
+        // raw byte count (native's StringBuilder/sb->length() is a byte buffer, and
+        // sendSVal's length prefix is strlen() -- also bytes). Java's String.length()
+        // is a UTF-16 *character* count, which only matches the UTF-8 byte count for
+        // pure-ASCII content. Any non-ASCII character (e.g. in a mangled/synthetic
+        // method name) would otherwise desync the declared length from the actual
+        // bytes written, corrupting every length-prefixed field downstream of it --
+        // encoding explicitly to UTF-8 bytes up front keeps the declared and actual
+        // sizes identical regardless of content.
         void print() {
-            String payload = sb.toString();
-            writeResponseHeader(requestID, responseType, responseStatus, payload.length());
-            System.out.print(payload);
+            byte[] payload = sb.toString().getBytes(StandardCharsets.UTF_8);
+            writeResponseHeader(requestID, responseType, responseStatus, payload.length);
+            try {
+                System.out.write(payload);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+            System.out.flush();
         }
 
         void sendByte(int b) {
@@ -521,15 +553,24 @@ public class IPCIO {
             sb.append(String.format("%016x", l));
         }
 
+        // Mirrors native's IPCresponse::sendDVal (ipcio.cc:497-503): doubles are sent as
+        // a length-prefixed string, not a raw/unframed number. This port's previous
+        // version appended the formatted number directly with no length prefix at all,
+        // desyncing the stream for every double value sent (the GUI's reader always
+        // expects a string header here, per readDVal -> readSVal).
         void sendDVal(double d) {
-            sb.append(String.format("%f", d));
+            sendSVal(String.format("%.12f", d));
         }
+        // The length prefix must be the UTF-8 *byte* count (matching native's strlen()
+        // semantics and this class's own print(), which encodes the whole buffer to
+        // UTF-8 bytes) -- s.length() is a char count and only agrees with the byte
+        // count for pure ASCII.
         void sendSVal(String s) {
             if (s == null) {
                 sendIVal(-1);
                 return;
             }
-            sendIVal(s.length());
+            sendIVal(s.getBytes(StandardCharsets.UTF_8).length);
             sb.append(s);
         }
 
@@ -609,8 +650,15 @@ public class IPCIO {
         }
     }
 
+    // Mirrors native's print_ipc_protocol_confirmation (ipc.cc:2598-2606): a bare,
+    // unframed line written directly via fprintf(stdout, ...)+fflush -- NOT wrapped in
+    // the type/length response framing used by every other write*() method here. The
+    // Analyzer GUI reads this one line as plain text before the binary IPC protocol
+    // (ACK/HANDSHAKE exchange) begins; wrapping it in framing bytes breaks that initial
+    // read.
     public static void writePlainString(String s) {
-        System.out.printf("%02x%08x%s", L_STRING, s.length(), s);
+        System.out.print(s);
+        System.out.flush();
     }
 
     static void writeResponseHeader(int requestID, int responseType, int responseStatus, int nBytes) {

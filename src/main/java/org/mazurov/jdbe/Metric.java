@@ -15,6 +15,9 @@ along with this program. If not, see <http://www.gnu.org/licenses>. */
 
 package org.mazurov.jdbe;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.mazurov.jdbe.Enums.*;
 
 public class Metric extends BaseMetric {
@@ -69,16 +72,106 @@ public class Metric extends BaseMetric {
         visbits = get_value_styles();
     }
 
+    private static boolean val_is_hidden(int v) {
+        return v == -1 || v == VAL_NA || (v & VAL_HIDE_ALL) != 0;
+    }
+
     public boolean is_any_visible() {
         return !(visbits == -1 || visbits == VAL_NA || (visbits & VAL_HIDE_ALL) != 0)
                 && (visbits & (VAL_VALUE | VAL_TIMEVAL | VAL_PERCENT)) != 0;
     }
+
+    // Mirrors native's Metric::is_value_visible/is_time_visible/is_visible/
+    // is_tvisible/is_pvisible (Metric.h:121-157).
+    public boolean is_value_visible() {
+        return (visbits & VAL_VALUE) != 0 || (!is_time_val() && (visbits & VAL_TIMEVAL) != 0);
+    }
+
+    public boolean is_time_visible() {
+        return is_time_val() && (visbits & VAL_TIMEVAL) != 0;
+    }
+
+    public boolean is_visible() {
+        return !val_is_hidden(visbits) && is_value_visible();
+    }
+
+    public boolean is_tvisible() {
+        return !val_is_hidden(visbits) && is_time_visible();
+    }
+
+    public boolean is_pvisible() {
+        return !val_is_hidden(visbits) && (visbits & VAL_PERCENT) != 0;
+    }
+
     public int get_visbits() {
         return visbits;
     }
 
     public void set_raw_visbits(int _visbits) {
         visbits = _visbits;
+    }
+
+    public boolean is_time_val() {
+        int v = VAL_TIMEVAL | VAL_VALUE;
+        return (get_value_styles() & v) == v;
+    }
+
+    public int get_real_visbits() {
+        int v = visbits;
+        if (!is_time_val() && (visbits & (VAL_TIMEVAL | VAL_VALUE)) != 0) {
+            v &= ~(VAL_TIMEVAL | VAL_VALUE);
+            v |= (get_value_styles() & (VAL_TIMEVAL | VAL_VALUE));
+        }
+        return v;
+    }
+
+    public String get_vis_string(int vis) {
+        if (subtype == BaseMetric.STATIC)
+            return "";
+        int v;
+        if (is_time_val())
+            v = vis & (VAL_TIMEVAL | VAL_VALUE | VAL_PERCENT);
+        else {
+            v = vis & VAL_PERCENT;
+            if ((vis & (VAL_TIMEVAL | VAL_VALUE)) != 0)
+                v |= (get_value_styles() & (VAL_TIMEVAL | VAL_VALUE));
+        }
+        return switch (v) {
+            case VAL_TIMEVAL -> ".";
+            case VAL_VALUE -> "+";
+            case VAL_TIMEVAL | VAL_VALUE -> ".+";
+            case VAL_PERCENT -> "%";
+            case VAL_TIMEVAL | VAL_PERCENT -> ".%";
+            case VAL_VALUE | VAL_PERCENT -> "+%";
+            case VAL_TIMEVAL | VAL_VALUE | VAL_PERCENT -> ".+%";
+            default -> "!";
+        };
+    }
+
+    public String get_mcmd(boolean allPossible) {
+        String sc = "";
+        if (subtype == BaseMetric.INCLUSIVE) sc = "i";
+        else if (subtype == BaseMetric.EXCLUSIVE) sc = "e";
+        else if (subtype == BaseMetric.ATTRIBUTED) sc = "a";
+        else if (subtype == BaseMetric.DATASPACE) sc = "d";
+        String vis = get_vis_string(allPossible ? get_value_styles() : get_real_visbits());
+        String hide = "";
+        if (!allPossible && (visbits == VAL_NA || (visbits & VAL_HIDE_ALL) != 0))
+            hide = "!";
+        return sc + hide + vis + get_cmd();
+    }
+
+    public String get_vis_str() {
+        if (visbits == -1) {
+            // uninitialized, return all possible with a trailing -
+            if (subtype == BaseMetric.STATIC)
+                return ".-";
+            else if (is_time_val())
+                return ".+%-";
+            else
+                return ".%-";
+        }
+        return get_vis_string(get_real_visbits());
     }
 
     public void set_subtype(int st) {
@@ -1171,4 +1264,110 @@ public class Metric extends BaseMetric {
                 throw new IllegalStateException();
         }
     } // set_subtype
+
+    // Per-column layout info computed by legend_width() and consumed by
+    // Hist_data.get_histmetrics/print_label/print_content. Mirrors native's
+    // Metric::HistMetric (Metric.h:39-51); indFirstExp/indTimeVal (compare-mode and
+    // HWC-time-column bookkeeping) are omitted since neither applies to this port.
+    static class HistMetric {
+        int width;
+        int maxvalue_width;
+        int maxtime_width;
+        String legend1 = "";
+        String legend2 = "";
+        String legend3 = "";
+    }
+
+    // Computes this column's total print width and wraps its header text (get_abbr(),
+    // plus a unit suffix like "sec.") into up to 3 lines. Mirrors native's
+    // Metric::legend_width (Metric.cc:1298-1472), simplified: this port never marks a
+    // metric time-visible (is_tvisible(), the HWC dual value/time-column feature) or
+    // percent-visible (is_pvisible() -- MetricList forces percent off for every
+    // metric), so those branches (and the associated "force unit onto the last line"
+    // refinement, and the legend/compare-mode first line) are dropped entirely.
+    void legend_width(HistMetric hitem, int gap) {
+        hitem.width = hitem.maxvalue_width;
+        int max_len = hitem.width;
+
+        String abbr = get_abbr();
+        List<String> tok = new ArrayList<>();
+        List<Integer> tlen = new ArrayList<>();
+        if (abbr != null) {
+            for (String t : abbr.trim().split("\\s+")) {
+                if (t.isEmpty())
+                    continue;
+                tok.add(t);
+                tlen.add(t.length());
+                max_len = Math.max(max_len, t.length());
+            }
+        }
+
+        String unit = "";
+        if (is_visible()) {
+            String s = "";
+            if ((get_value_styles() & VAL_TIMEVAL) != 0 && !is_time_val())
+                s = "sec.";
+            int len = s.length();
+            if (hitem.maxvalue_width < len) {
+                hitem.width += len - hitem.maxvalue_width;
+                hitem.maxvalue_width = len;
+            }
+            StringBuilder sb = new StringBuilder();
+            for (int i = s.length(); i < hitem.maxvalue_width; i++)
+                sb.append(' ');
+            sb.append(s);
+            unit = sb.toString();
+        }
+        while (unit.endsWith(" "))
+            unit = unit.substring(0, unit.length() - 1);
+
+        if (!unit.isEmpty()) {
+            tok.add(unit);
+            tlen.add(unit.length());
+            max_len = Math.max(max_len, unit.length());
+        }
+
+        while (!is_width_ok(3, max_len, tlen))
+            max_len++;
+        hitem.width = max_len + gap;
+
+        String[] legends = new String[3];
+        int ind = 0;
+        for (int i = 0; i < 3; i++) {
+            StringBuilder str = new StringBuilder();
+            for (; ind < tok.size(); ind++) {
+                int len = tlen.get(ind);
+                if (str.length() != 0) {
+                    if (str.length() + 1 + len > max_len)
+                        break;
+                    str.append(' ').append(tok.get(ind));
+                } else {
+                    if (len > max_len)
+                        break;
+                    str.append(tok.get(ind));
+                }
+            }
+            legends[i] = str.toString();
+        }
+        hitem.legend1 = legends[0];
+        hitem.legend2 = legends[1];
+        hitem.legend3 = legends[2];
+    }
+
+    // Mirrors native's is_width_ok (Metric.cc:1279-1296): can `tok`s be greedily
+    // word-wrapped into at most `lines` lines of at most `width` columns each?
+    private static boolean is_width_ok(int lines, int width, List<Integer> tlen) {
+        int len = 0;
+        for (int tl : tlen) {
+            if (len != 0)
+                len++;
+            if (len + tl > width) {
+                if (--lines == 0)
+                    return false;
+                len = 0;
+            }
+            len += tl;
+        }
+        return true;
+    }
 }

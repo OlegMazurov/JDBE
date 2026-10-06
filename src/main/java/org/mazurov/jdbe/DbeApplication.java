@@ -15,6 +15,8 @@ along with this program. If not, see <http://www.gnu.org/licenses>. */
 
 package org.mazurov.jdbe;
 
+import java.util.Arrays;
+
 public class DbeApplication extends Application {
 
     boolean rdtMode;
@@ -25,7 +27,14 @@ public class DbeApplication extends Application {
     protected DbeApplication(String[] args) {
         INSTANCE = this;
         this.args = args;
-        DbeSession.createSession(settings);
+        // Matches native's DbeSession::DbeSession(ipc_mode || rdt_mode) (DbeSession.cc:
+        // 379, called from main()'s own argv scan): read_rc() restricts .gprofng.rc
+        // processing to ADDPATH/PATHMAP when run under the Analyzer GUI's "-IPC" mode.
+        // rdtMode (a genuine interactive non-IPC er_print session) is never set true
+        // anywhere in this port yet -- see the field's own declaration -- so "-IPC" is
+        // the only case reachable here today.
+        boolean ipcMode = Arrays.asList(args).contains("-IPC");
+        DbeSession.createSession(settings, ipcMode || rdtMode);
     }
 
     public static DbeApplication getInstance() {

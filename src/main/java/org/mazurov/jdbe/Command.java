@@ -15,7 +15,11 @@ along with this program. If not, see <http://www.gnu.org/licenses>. */
 
 package org.mazurov.jdbe;
 
+import java.io.PrintStream;
+
 public class Command {
+
+    public static final String ALL_CMD = "all";      // token for all
 
     private static final String fhdr = "\nCommands controlling the function list:";
     private static final String cchdr = "\nCommands controlling the callers-callees and calltree lists:";
@@ -221,7 +225,18 @@ public class Command {
         // Error return "commands"
         AMBIGUOUS_CMD,
         UNKNOWN_CMD
-    };
+    }
+
+    public enum Cmd_status {
+        CMD_OK,
+        CMD_BAD,
+        CMD_AMBIGUOUS,
+        CMD_BAD_ARG,
+        CMD_OUTRANGE,
+        CMD_INVALID
+    }
+
+    public record CommandLookup(CmdType type, int arg_count, int cparam) {}
 
     static class Cmdtable {
         CmdType token;      // command key
@@ -357,6 +372,17 @@ public class Command {
         new Cmdtable(CmdType.DSORT, "dsort", null, "metric_spec", 1, ""),
         new Cmdtable(CmdType.EN_DESC, "en_desc", null, "{on|off|=<regex>)", 1, ""),
 
+        // Mirrors native's "andeflthdr" table section (Command.cc:180-187), minus
+        // TLMODE/TLDATA (not used as any DispTab cmdtoken in Settings.java, so not
+        // reachable via dbeGetTabListInfo's Command.get_cmd_str lookup). Without these,
+        // get_cmd_str fell through to its "xxxx" not-found placeholder for every tab
+        // whose cmdtoken is one of these four.
+        new Cmdtable(CmdType.TABS, "tabs", null, "tablist", 1, ""),
+        new Cmdtable(CmdType.CALLFLAME, "callflame", null, null, 0, ""),
+        new Cmdtable(CmdType.TIMELINE, "timeline", null, null, 0, ""),
+        new Cmdtable(CmdType.DUALSOURCE, "dsrc", null, null, 0, ""),
+        new Cmdtable(CmdType.SOURCEDISAM, "srcdis", null, null, 0, ""),
+
         new Cmdtable(CmdType.NO_CMD, "", null, null, 0, mischdr),
         new Cmdtable(CmdType.DUMMY_CMD, "<type>", null, null, 0, typehdr),
         new Cmdtable(CmdType.DUMMY_CMD, " ", null, null, 0, typehdr2),
@@ -412,6 +438,108 @@ public class Command {
         new Cmdtable(CmdType.LAST_CMD, "xxxx", null, null, 0, null)
     };
 
+    public static CommandLookup get_command(String cmd) {
+        int arg_count = 0;
+        int cparam = -1;
+        if (cmd.isEmpty())
+            return new CommandLookup(CmdType.STDIN, arg_count, cparam);
+        if (cmd.charAt(0) == '#')
+            return new CommandLookup(CmdType.COMMENT, arg_count, cparam);
+        if (cmd.equals("V") || cmd.equals("-version"))
+            return new CommandLookup(CmdType.VERSION_cmd, arg_count, cparam);
+        if (cmd.equals("-help"))
+            return new CommandLookup(CmdType.HELP, arg_count, cparam);
+        if (cmd.startsWith("-whoami=")) {
+            cparam = 8;
+            return new CommandLookup(CmdType.WHOAMI, arg_count, cparam);
+        }
+
+        if (cmd.charAt(0) == '-')
+            cmd = cmd.substring(1);
+        int len = cmd.length();
+        CmdType token = CmdType.UNKNOWN_CMD;
+        boolean got = false;
+        for (int i = 0; cmd_lst[i].token != CmdType.LAST_CMD; i++) {
+            Cmdtable entry = cmd_lst[i];
+            if (entry.str.regionMatches(true, 0, cmd, 0, len)
+                    || (entry.alt != null && entry.alt.regionMatches(true, 0, cmd, 0, len))) {
+                // Is it unambiguous?
+                if (cmd.equalsIgnoreCase(entry.str) || (entry.alt != null && cmd.equalsIgnoreCase(entry.alt))) {
+                    // exact, full-length match
+                    return new CommandLookup(entry.token, entry.arg_count, cparam);
+                }
+                if (got)
+                    return new CommandLookup(CmdType.AMBIGUOUS_CMD, arg_count, cparam);
+                got = true;
+                token = entry.token;
+                arg_count = entry.arg_count;
+            }
+        }
+
+        // Did we find it?
+        if (token != CmdType.UNKNOWN_CMD)
+            return new CommandLookup(token, arg_count, cparam);
+
+        // See if it's the name of an index object
+        DbeSession dbeSession = DbeSession.getInstance();
+        if (dbeSession != null) {
+            int indxtype = dbeSession.findIndexSpaceByName(cmd);
+            if (indxtype >= 0) {
+                // found it
+                cparam = indxtype;
+                return new CommandLookup(CmdType.INDXOBJ, arg_count, cparam);
+            }
+        }
+        return new CommandLookup(token, arg_count, cparam);
+    }
+
+    // construct format for printing help, sized to the longest command in cmd_lst
+    private static String fmt_help() {
+        int max_len = 0;
+        for (int i = 0; cmd_lst[i].token != CmdType.LAST_CMD; i++) {
+            Cmdtable entry = cmd_lst[i];
+            int len = entry.str.length();
+            if (entry.alt != null)
+                len += entry.alt.length() + 2;
+            if (entry.arg != null)
+                len += entry.arg.length() + 2;
+            max_len = Math.max(max_len, len);
+        }
+        return "     %-" + (max_len + 1) + "s %s\n";
+    }
+
+    public static void print_help(String prog_name, boolean cmd_line, boolean usermode, PrintStream outf) {
+        // show the hidden commands too, in usermode ("xhelp")
+        CmdType nc = usermode ? CmdType.HELP : CmdType.HHELP;
+
+        if (cmd_line)
+            outf.printf("Usage: %s [ -script script | -command | - ] exper_1 ... exper_n\n", prog_name);
+        outf.print("An alternate spelling for a command is shown in [], where applicable.\n\n"
+                + "Those commands followed by a * may appear in .rc files.\n\n"
+                + "Those commands followed by a $ can only appear in .rc files.\n\n");
+
+        String fmt = fmt_help();
+        for (int i = 0; ; i++) {
+            Cmdtable entry = cmd_lst[i];
+            if (entry.token == CmdType.LAST_CMD)
+                break;
+            if (entry.token == CmdType.NO_CMD) {
+                // this is a header line
+                outf.printf(" %s\n", entry.desc);
+            } else if (!entry.str.isEmpty()) {
+                // this is a real command line
+                StringBuilder sb = new StringBuilder(entry.str);
+                if (entry.alt != null)
+                    sb.append('[').append(entry.alt).append(']');
+                if (entry.arg != null)
+                    sb.append(' ').append(entry.arg);
+                outf.printf(fmt, sb.toString(), entry.desc);
+            }
+            if (entry.token == nc)
+                break;
+        }
+    }
+
     public static String get_cmd_str(CmdType type) {
         for (int i = 0;; i++) {
             if (cmd_lst[i].token == CmdType.LAST_CMD)
@@ -421,4 +549,16 @@ public class Command {
         }
         return "xxxx";
     }
+
+    public static String get_err_string(Cmd_status err) {
+        return switch (err) {
+            case CMD_OK -> null;
+            case CMD_BAD -> "command bad";
+            case CMD_AMBIGUOUS -> "command ambiguous";
+            case CMD_BAD_ARG -> "Invalid argument to command";
+            case CMD_OUTRANGE -> "argument to command is out-of-range";
+            case CMD_INVALID -> "invalid command";
+        };
+    }
+
 }

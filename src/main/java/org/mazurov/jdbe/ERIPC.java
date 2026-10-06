@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
 import java.util.Locale;
 
 import static org.mazurov.jdbe.IPCIO.*;
@@ -64,12 +65,75 @@ public class ERIPC {
         return str == null ? "NULL" : str;
     }
 
-    public static void ipc_mainLoop() throws IOException {
+    // Signals a GUI-requested restart (native's reexec(), gp-display-text.cc:54-64,
+    // replaces the running process image via execv() to get a clean restart while
+    // keeping the same PID and the same stdin/stdout pipe the Analyzer GUI holds --
+    // IPCReader's restart handling never reacquires new stream objects, it assumes the
+    // same OS-level pipe stays connected). Re-exec'ing the whole JVM is an awkward fit
+    // for a Java port (and kills any attached debugger session), so instead this
+    // exception unwinds the stack out of ipc_mainLoop() back to ERPrint.main(), which
+    // rebuilds all session state from scratch (new ERPrint(args), re-entering
+    // ipc_mainLoop()) and keeps reading from the same System.in/System.out -- equivalent
+    // from the GUI's point of view, since it already replays the full initApplication/
+    // initView/setExperimentsGroups handshake after every restart regardless of whether
+    // the OS process actually changed underneath it.
+    static class RestartRequestedException extends RuntimeException {
+    }
 
-        ipcLog = new PrintStream(new FileOutputStream("ipc.log"), true);
+    private static final String IPC_PROTOCOL_CURR = "IPC_PROTOCOL_38";
+    private static String ipc_protocol = null; // null: no confirmation line is printed
+
+    // Mirrors native's check_env_args (ipc.cc:2552-2596): scans the "-E KEY=VALUE" pairs
+    // the Analyzer passes after "-IPC" (args[0] here, matching native's argv[1] since
+    // Java's args[] omits the program name that argv[0] carries) and, if it finds
+    // "SP_IPC_PROTOCOL=...", records the confirmation string to print. If the GUI never
+    // passes this (confirmed empirically: `gp-display-text -IPC` run bare prints no
+    // "ER_IPC:" line at all), ipc_protocol stays null and no confirmation is printed --
+    // see print_ipc_protocol_confirmation (ipc.cc:2598-2606), which is likewise gated on
+    // ipc_protocol being non-NULL.
+    private static void check_env_args(String[] args) {
+        int indx = 1; // skip "-IPC" (args[0])
+        while (args.length - indx >= 2) {
+            String option = args[indx++];
+            if (!option.equals("-E"))
+                continue;
+            String cmdEnvVar = args[indx++];
+            int sep = cmdEnvVar.indexOf('=');
+            if (sep < 0)
+                continue;
+            String key = cmdEnvVar.substring(0, sep);
+            String val = cmdEnvVar.substring(sep + 1);
+            if (key.equals("SP_IPC_PROTOCOL"))
+                ipc_protocol = val.equals(IPC_PROTOCOL_CURR) ? IPC_PROTOCOL_CURR : "IPC_PROTOCOL_UNKNOWN";
+        }
+    }
+
+    private static void print_ipc_protocol_confirmation() {
+        if (ipc_protocol != null)
+            writePlainString(String.format("ER_IPC: %s\n", ipc_protocol));
+    }
+
+    public static void ipc_mainLoop() throws IOException {
+        try {
+            mainLoop();
+        } catch (RestartRequestedException rex) {
+            throw rex;
+        } catch (Exception ex) {
+            ex.printStackTrace(ipcLog);
+            throw ex;
+        }
+    }
+
+    static void mainLoop() throws IOException {
+
+        // Keep the log contiguous across a restart.
+        if (ipcLog == null) {
+            ipcLog = new PrintStream(new FileOutputStream("ipc.log"), true);
+        }
         ipc_log("Args: %s%n", String.join(" ", DbeApplication.getInstance().getArgs()));
 
-        writePlainString("ER_IPC: IPC_PROTOCOL_38\n");
+        check_env_args(DbeApplication.getInstance().getArgs());
+        print_ipc_protocol_confirmation();
         setProgress (100, "Restart engine");
 
         // Main loop -- read a request from the wire, do it, return the response
@@ -98,6 +162,10 @@ public class ERIPC {
                     String[] res = DbeApplication.getInstance().initApplication(arg1, arg2, IPCIO::setProgress);
                     req.writeArray(res);
                 }
+                case "reExec" -> {
+                    ipc_log("  reExec requested; throwing RestartRequestedException%n");
+                    throw new RestartRequestedException();
+                }
                 case "initView" -> {
                     int arg1 = req.readInt();
                     int arg2 = req.readInt();
@@ -110,6 +178,24 @@ public class ERIPC {
                     String res = currentRelativePath.toAbsolutePath().toString();
                     req.writeString (res);
                 }
+                // Mirrors native's chdir(arg1) (ipc.cc:502-509). The JVM has no real
+                // chdir(); this port's relative-path resolution (Paths.get("")/new
+                // File(relative)) goes through the "user.dir" system property, so
+                // updating that is the equivalent for everything this engine itself
+                // does with relative paths.
+                case "setCurrentDirectory" -> {
+                    String arg1 = req.readString();
+                    ipc_log("  arg = %s%n", arg1);
+                    int res = -1;
+                    if (arg1 != null) {
+                        java.io.File dir = new java.io.File(arg1);
+                        if (dir.isDirectory()) {
+                            System.setProperty("user.dir", dir.getAbsolutePath());
+                            res = 0;
+                        }
+                    }
+                    req.writeInt(res);
+                }
                 case "getLocale" -> {
                     req.writeString(Locale.getDefault().toString());
                 }
@@ -120,17 +206,59 @@ public class ERIPC {
                     req.writeString(Locale.getDefault().toString());
                 }
                 case "setExperimentsGroups" -> {
-                    Object[] groups = (Object[])req.readArray();
+                    // Wire-encoded as a heterogeneous array (L_OBJECT: one Vector<String>
+                    // per group), not a homogeneous 2D string array -- each element needs
+                    // its own cast.
+                    Object[] rawGroups = (Object[]) req.readArray();
+                    String[][] groups = new String[rawGroups.length][];
+                    for (int i = 0; i < rawGroups.length; i++)
+                        groups[i] = (String[]) rawGroups[i];
                     ipc_log ("  groups.size = %d%n", groups.length);
                     String message = null;
                     if (groups.length > 0) {
                         int idx = 0;
-                        for (Object group : groups) {
-                            ipc_log("  Group %d%n : %s%n", idx++, group.toString());
+                        for (String[] group : groups) {
+                            ipc_log("  Group %d%n : %s%n", idx++, Arrays.toString(group));
                         }
-//                        message = dbeSetExperimentsGroups(groups);
+                        message = dbeSetExperimentsGroups(groups);
                     }
                     req.writeString(message);
+                }
+                case "getFounderExpId" -> {
+                    int[] arg = (int[]) req.readArray();
+                    ipc_log("  expIds = %d%n", arg.length);
+                    int[] res = dbeGetFounderExpId(arg);
+                    req.writeArray(res);
+                }
+                case "getUserExpId" -> {
+                    int[] arg = (int[]) req.readArray();
+                    ipc_log("  expIds = %d%n", arg.length);
+                    int[] res = dbeGetUserExpId(arg);
+                    req.writeArray(res);
+                }
+                case "getExpVerboseName" -> {
+                    int[] arg = (int[]) req.readArray();
+                    ipc_log("  expIds = %d%n", arg.length);
+                    String[] res = dbeGetExpVerboseName(arg);
+                    req.writeArray(res);
+                }
+                case "getExpGroupId" -> {
+                    int[] arg = (int[]) req.readArray();
+                    ipc_log("  expIds = %d%n", arg.length);
+                    int[] res = dbeGetExpGroupId(arg);
+                    req.writeArray(res);
+                }
+                case "getExperimentTimeInfo" -> {
+                    int[] expIds = (int[]) req.readArray();
+                    ipc_log("  cnt = %d%n", expIds.length);
+                    Object[] res = dbeGetExperimentTimeInfo(expIds);
+                    req.writeArray(res);
+                }
+                case "getExperimentDataDescriptors" -> {
+                    int[] expIds = (int[]) req.readArray();
+                    ipc_log("  cnt = %d%n", expIds.length);
+                    Object[] res = dbeGetExperimentDataDescriptors(expIds);
+                    req.writeArray(res);
                 }
                 case "setNameFormat" -> {
                     int arg1 = req.readInt();
@@ -164,6 +292,22 @@ public class ERIPC {
                     int arg1 = req.readInt();
                     ipc_log("  arg1 = %d%n", arg1);
                     boolean[] res = dbeGetExpEnable(arg1);
+                    req.writeArray(res);
+                }
+                case "getExpName" -> {
+                    // XXX add argument == DbeView index (matches native's own XXX comment)
+                    String[] res = dbeGetExpName(0);
+                    req.writeArray(res);
+                }
+                case "getExpState" -> {
+                    // XXX add argument == DbeView index (matches native's own XXX comment)
+                    int[] res = dbeGetExpState(0);
+                    req.writeArray(res);
+                }
+                case "getExpInfo" -> {
+                    int arg1 = req.readInt();
+                    ipc_log("  args = %d%n", arg1);
+                    String[] res = dbeGetExpInfo(arg1);
                     req.writeArray(res);
                 }
                 case "getFiles" -> {
@@ -205,6 +349,135 @@ public class ERIPC {
                     ipc_log(res[1]);
                     req.writeArray(res);
                 }
+                case "getRefMetricTreeValues" -> {
+                    int dbevindex = req.readInt();
+                    String[] metcmds = (String[]) req.readArray();
+                    String[] nonmetcmds = (String[]) req.readArray();
+                    ipc_log("  args = %d, metcmds.length=%d, nonmetcmds.length=%d\n",
+                            dbevindex, metcmds != null ? metcmds.length : 0, nonmetcmds != null ? nonmetcmds.length : 0);
+                    Object[] res = dbeGetRefMetricTreeValues(dbevindex, metcmds, nonmetcmds);
+                    req.writeArray(res);
+                }
+                case "getOverviewText" -> {
+                    int arg1 = req.readInt();
+                    ipc_log("  arg = %d\n", arg1);
+                    String[] res = dbeGetOverviewText(arg1);
+                    req.writeArray(res);
+                }
+                case "setSort" -> {
+                    int arg1 = req.readInt();
+                    int arg2 = req.readInt();
+                    int arg3 = req.readInt();
+                    boolean arg4 = req.readBoolean();
+                    ipc_log("  args = %d, %d, %d, %c%n", arg1, arg2, arg3, arg4 ? 'T' : 'F');
+                    dbeSetSort(arg1, arg2, arg3, arg4);
+                    req.writeString(null);
+                }
+                case "setSelObj" -> {
+                    int arg1 = req.readInt();
+                    long arg2 = req.readLong();
+                    int arg3 = req.readInt();
+                    int arg4 = req.readInt();
+                    ipc_log("  args = %d, %d, %d, %d\n", arg1, arg2, arg3, arg4);
+                    dbeSetSelObj(arg1, arg2, arg3, arg4);
+                    req.writeString(null);
+                }
+                case "setSelObjV2" -> {
+                    int arg1 = req.readInt();
+                    long arg2 = req.readLong();
+                    ipc_log("  args = %d, %d\n", arg1, arg2);
+                    dbeSetSelObjV2(arg1, arg2);
+                    req.writeString(null);
+                }
+                case "getSelObj" -> {
+                    int arg1 = req.readInt();
+                    int arg2 = req.readInt();
+                    int arg3 = req.readInt();
+                    ipc_log("  args = %d, %d, %d\n", arg1, arg2, arg3);
+                    long res2 = dbeGetSelObj(arg1, arg2, arg3);
+                    req.writeLong(res2);
+                }
+                case "getSelObjV2" -> {
+                    int arg1 = req.readInt();
+                    String arg2 = req.readString();
+                    ipc_log("  arg1 = %d  arg2 = %s\n", arg1, str2str(arg2));
+                    long res2 = dbeGetSelObjV2(arg1, arg2);
+                    req.writeLong(res2);
+                }
+                case "getSelIndex" -> {
+                    int arg1 = req.readInt();
+                    long arg2 = req.readLong();
+                    int arg3 = req.readInt();
+                    int arg4 = req.readInt();
+                    ipc_log("  args = %d, %d, %d, %d\n", arg1, arg2, arg3, arg4);
+                    int res = dbeGetSelIndex(arg1, arg2, arg3, arg4);
+                    req.writeInt(res);
+                }
+                case "getObjNameV2" -> {
+                    int arg1 = req.readInt();
+                    long arg2 = req.readLong();
+                    ipc_log("  arg1 = %d, arg2 = %d\n", arg1, arg2);
+                    String res = dbeGetObjNameV2(arg1, arg2);
+                    req.writeString(res);
+                }
+                case "setFuncDataV2" -> {
+                    int dbevindex = req.readInt();
+                    long sel_obj = req.readLong();
+                    int type = req.readInt();
+                    int subtype = req.readInt();
+                    ipc_log("  args = %d, %d, %d, %d\n", dbevindex, sel_obj, type, subtype);
+                    Object[] res = dbeSetFuncDataV2(dbevindex, sel_obj, type, subtype);
+                    req.writeArray(res);
+                }
+                case "getMsg" -> {
+                    int arg1 = req.readInt();
+                    int arg2 = req.readInt();
+                    ipc_log("  args = %d, %d\n", arg1, arg2);
+                    String res = dbeGetMsg(arg1, arg2);
+                    req.writeString(res);
+                }
+                case "getNames" -> {
+                    int arg1 = req.readInt();
+                    int arg2 = req.readInt();
+                    long arg3 = req.readLong();
+                    ipc_log("  args = %d, %d, %d\n", arg1, arg2, arg3);
+                    String[] res = dbeGetNames(arg1, arg2, arg3);
+                    req.writeArray(res);
+                }
+                case "getFuncList" -> {
+                    int arg1 = req.readInt();
+                    int arg2 = req.readInt();
+                    int arg3 = req.readInt();
+                    ipc_log("  args = %d, %d, %d\n", arg1, arg2, arg3);
+                    Object[] res = dbeGetFuncList(arg1, arg2, arg3);
+                    req.writeArray(res);
+                }
+                case "getFilterStr" -> {
+                    int arg1 = req.readInt();
+                    ipc_log("  args = %d\n", arg1);
+                    String res = dbeGetFilterStr(arg1);
+                    req.writeString(res);
+                }
+                case "getFuncListMini" -> {
+                    int arg1 = req.readInt();
+                    int arg2 = req.readInt();
+                    int arg3 = req.readInt();
+                    ipc_log("  args = %d, %d, %d\n", arg1, arg2, arg3);
+                    Object[] res = dbeGetFuncListMini(arg1, arg2, arg3);
+                    req.writeArray(res);
+                }
+                case "getTableDataV2" -> {
+                    int arg1 = req.readInt();
+                    String arg2 = req.readString();
+                    String arg3 = req.readString();
+                    String arg4 = req.readString();
+                    String arg5 = req.readString();
+                    long[] arg6 = (long[]) req.readArray();
+                    ipc_log("  args = %d, %s, %s, %s, %s, %d\n", arg1, arg2, arg3, arg4, arg5,
+                            arg6 == null ? -1 : arg6.length);
+                    Object[] res = dbeGetTableDataV2(arg1, arg2, arg3, arg4, arg5, arg6);
+                    req.writeArray(res);
+                }
                 case "getJavaEnable" -> {
                     boolean res = dbeGetJavaEnable();
                     req.writeBoolean(res);
@@ -227,6 +500,15 @@ public class ERIPC {
                             vis, cmd, expr_spec, legends);
                     DbeSession.getInstance().getView(dbevindex).reset_metric_list(mlist, cmp_mode);
                     req.writeResponseGeneric();
+                }
+                case "getSummary" -> {
+                    int arg1 = req.readInt();
+                    long[] arg2 = (long[]) req.readArray();
+                    int arg3 = req.readInt();
+                    int arg4 = req.readInt();
+                    ipc_log("  args = %d, [%d], %d, %d%n", arg1, arg2 == null ? -1 : arg2.length, arg3, arg4);
+                    Object[] res = dbeGetSummary(arg1, arg2, arg3, arg4);
+                    req.writeArray(res);
                 }
                 case "listMachineModels" -> {
                     String[] res = dbeListMachineModels();
@@ -297,6 +579,35 @@ public class ERIPC {
                     ipc_log ("  arg = %s\n", arg1);
                     String[] res = dbeGetExpPreview(0, arg1);
                     req.writeArray(res);
+                }
+                case "getSearchPath" -> {
+                    ipc_log("  no args\n");
+                    String[] res = dbeGetSearchPath(0);
+                    req.writeArray(res);
+                }
+                case "setSearchPath" -> {
+                    String[] arg1 = (String[]) req.readArray();
+                    ipc_log("  %d strings\n", arg1.length);
+                    dbeSetSearchPath(0, arg1);
+                    req.writeString(null);
+                }
+                case "getPathmaps" -> {
+                    Object[] res = dbeGetPathmaps(0);
+                    req.writeArray(res);
+                }
+                case "setPathmaps" -> {
+                    String[] from = (String[]) req.readArray();
+                    String[] to = (String[]) req.readArray();
+                    ipc_log("  %d strings\n", from != null ? from.length : 0);
+                    String res = dbeSetPathmaps(from, to);
+                    req.writeString(res);
+                }
+                case "addPathmap" -> {
+                    String arg1 = req.readString();
+                    String arg2 = req.readString();
+                    ipc_log("  args = '%s', '%s'\n", str2str(arg1), str2str(arg2));
+                    String res = dbeAddPathmap(0, arg1, arg2);
+                    req.writeString(res);
                 }
 
                 default -> {

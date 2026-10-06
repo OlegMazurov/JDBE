@@ -15,6 +15,7 @@ along with this program. If not, see <http://www.gnu.org/licenses>. */
 
 package org.mazurov.jdbe;
 
+import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -145,9 +146,20 @@ public class MetricList {
                 }
             }
         }
-        // set all metrics visible
+        // Set default visibility. Native computes this via a full setMetrics()/
+        // DEFAULT_METRICS command-string parser (consulting each BaseMetric's
+        // per-subtype default_visbits), which isn't ported -- this is a simplification
+        // matching its actual default *result* for every metric type this port
+        // currently computes: EXCLUSIVE/INCLUSIVE metrics show their plain value (no
+        // percent column); STATIC metrics are hidden except ONAME (the Name column,
+        // always shown).
         for (Metric m : items) {
-            m.enable_all_visbits();
+            if (m.get_subtype() == BaseMetric.STATIC && m.get_type() != BaseMetric.Type.ONAME)
+                m.set_raw_visbits(VAL_NA);
+            else {
+                m.enable_all_visbits();
+                m.set_raw_visbits(m.get_visbits() & ~VAL_PERCENT);
+            }
         }
     }
 
@@ -192,6 +204,121 @@ public class MetricList {
 
     public void set_sort_ref_index(int ind) {
         sort_ref_index = ind;
+    }
+
+    public Metric get_sort_metric() {
+        int i = get_sort_ref_index();
+        return i >= 0 && i < items.size() ? items.get(i) : null;
+    }
+
+    public String get_sort_name() {
+        Metric item = get_sort_metric();
+        if (item == null)
+            return "";
+        String n = item.get_name();
+        return sort_reverse ? "-" + n : n;
+    }
+
+    public String get_sort_cmd() {
+        Metric item = get_sort_metric();
+        if (item == null)
+            return "";
+        String n = item.get_mcmd(false);
+        return sort_reverse ? "-" + n : n;
+    }
+
+    public String set_sort(String mspec, boolean fromRcFile) {
+        // metric-spec sort parsing (matching by mcmd/name against items) not yet ported.
+        throw new RuntimeException("MetricList.set_sort not implemented");
+    }
+
+    // Mirrors native's MetricList::set_sort(int, bool) (MetricList.cc:618-632): set_sort
+    // by the visible column index the GUI sends (Analyzer, not er_print).
+    public void set_sort(int visindex, boolean reverse) {
+        if (visindex < items.size()) {
+            Metric mitem = items.get(visindex);
+            if (mitem.is_any_visible()) {
+                sort_ref_index = visindex;
+                sort_reverse = reverse;
+                return;
+            }
+        }
+        // Native falls back here to set_fallback_sort(), which goes through the
+        // string-based sort-spec parser this port's set_sort(String,...) doesn't
+        // implement yet. Not reachable from the GUI in practice (it only ever sends the
+        // index of a column it is itself displaying, hence visible), so left unported.
+        throw new RuntimeException(
+                "MetricList.set_sort: fallback sort not implemented (visindex=" + visindex + ")");
+    }
+
+    // Mirrors native's MetricList::find_metric(char*, BaseMetric::SubType)
+    // (MetricList.cc:801-808), simplified to a direct cmd+subtype match (native's
+    // get_listorder() indirection isn't needed here).
+    public Metric find_metric(String cmd, int subtype) {
+        for (Metric m : items) {
+            if (m.get_subtype() == subtype && Objects.equals(m.get_cmd(), cmd))
+                return m;
+        }
+        return null;
+    }
+
+    // Mirrors native's MetricList::set_sort_metric (MetricList.cc:635-665), simplified:
+    // the 'any'/'all'/'hwc'/'bit' keyword forms are er_print "-sort" command-line
+    // syntax, not reachable from the GUI's column-click-driven setSort path that is
+    // this method's only caller in this port (DbeView.setSort cross-tab sync).
+    public boolean set_sort_metric(String mname, int subtype, boolean reverse) {
+        for (int i = 0; i < items.size(); i++) {
+            Metric m = items.get(i);
+            if (subtype == m.get_subtype() && Objects.equals(mname, m.get_cmd())) {
+                sort_ref_index = i;
+                sort_reverse = reverse;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // a string formatted from the metric list, suitable for a "metrics <string>" command
+    public String get_metrics() {
+        StringBuilder sb = new StringBuilder();
+        for (Metric item : items) {
+            if (sb.length() != 0)
+                sb.append(':');
+            sb.append(item.get_mcmd(false));
+        }
+        return sb.toString();
+    }
+
+    // print the list of metrics to a file
+    //  debug = false: print the name and mcmd of each metric
+    //  debug = true: also print subtype/vtype/visibility/sort details for each metric
+    public void print_metric_list(PrintStream dis_file, String leader, boolean debug) {
+        dis_file.print(leader);
+        if (items.isEmpty()) {
+            dis_file.print("metric list is empty; aborting\n");
+            return;
+        }
+
+        // Find the longest metric name & command
+        int max_len = 0;
+        int max_len2 = 0;
+        for (Metric item : items) {
+            max_len = Math.max(max_len, item.get_name().length());
+            max_len2 = Math.max(max_len2, item.get_mcmd(true).length());
+        }
+        String fmt_name = debug ? "%" + max_len + "s: %-" + max_len2 + "s" : "%" + max_len + "s: %s";
+
+        for (int index = 0; index < items.size(); index++) {
+            Metric item = items.get(index);
+            dis_file.printf(fmt_name, item.get_name(), item.get_mcmd(true));
+            if (debug)
+                dis_file.printf("\t[st %2d, VT %d, vis = %4s, T=%d, sort = %c]",
+                        item.get_subtype(), item.get_vtype().ordinal(), item.get_vis_str(),
+                        item.is_time_val() ? 1 : 0, sort_ref_index == index ? 'Y' : 'N');
+            dis_file.print('\n');
+        }
+        dis_file.print('\n');
+        dis_file.flush();
     }
 
     public void set_metrics(MetricList mlist) {

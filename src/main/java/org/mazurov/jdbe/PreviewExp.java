@@ -87,11 +87,17 @@ public class PreviewExp extends Experiment {
         return uarglist;
     }
 
+    // Mirrors native's PreviewExp::mqueue_str (PreviewExp.cc:105-113): strip a single
+    // trailing newline, keeping the rest of the (possibly multi-line) message text
+    // intact. The previous version truncated to the first line instead (indexOf('\n')),
+    // which silently returned an empty string here: write_header()'s first message
+    // ("Target command (...)") begins with a leading "\n" of its own (a blank-line
+    // separator), so the "first line" was empty even though the full header text was
+    // present -- this is what made the Analyzer's experiment-preview panel look empty.
     private String mqueue_str(Emsgqueue msgqueue, String null_str) {
         String mesgs = Emsg.pr_mesgs(msgqueue.fetch(), null_str, "");
-        int idx = mesgs.indexOf('\n');
-        if (idx >= 0) {
-            mesgs = mesgs.substring(0, idx);
+        if (mesgs.endsWith("\n")) {
+            mesgs = mesgs.substring(0, mesgs.length() - 1);
         }
         return mesgs;
     }

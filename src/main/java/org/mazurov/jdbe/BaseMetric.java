@@ -15,7 +15,6 @@ along with this program. If not, see <http://www.gnu.org/licenses>. */
 
 package org.mazurov.jdbe;
 
-import java.sql.Time;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -365,6 +364,10 @@ public class BaseMetric {
         return cmd;
     }
 
+    public ValueTag get_vtype() {
+        return valtype;
+    }
+
     public int get_flavors() {
         return flavors;
     }
@@ -461,6 +464,7 @@ public class BaseMetric {
 //                                    (1 << OMP_RDUC_STATE)
 //        };
 
+        String spec;
         clock_unit = CUNIT_TIME;
         switch (type) {
             case SIZES:
@@ -619,38 +623,38 @@ public class BaseMetric {
 //                specify_metric (null, "1"));
 //                cmd = "syncn"));
 //                break;
-//            case HEAP_ALLOC_CNT:
-//                packet_type = ProfData_type.DATA_HEAP;
-//                username = "Allocations"));
-//                snprintf (buf, sizeof (buf), "(HTYPE!=%d)&&(HTYPE!=%d)&&HVADDR"),
-//                        FREE_TRACE, MUNMAP_TRACE);
-//                specify_metric (buf, "1"));
-//                cmd = "heapalloccnt"));
-//                break;
-//            case HEAP_ALLOC_BYTES:
-//                packet_type = ProfData_type.DATA_HEAP;
-//                username = "Bytes Allocated"));
-//                snprintf (buf, sizeof (buf), "(HTYPE!=%d)&&(HTYPE!=%d)&&HVADDR"),
-//                        FREE_TRACE, MUNMAP_TRACE);
-//                specify_metric (buf, "HSIZE"));
-//                cmd = "heapallocbytes"));
-//                break;
-//            case HEAP_LEAK_CNT:
-//                packet_type = ProfData_type.DATA_HEAP;
-//                username = "Leaks"));
-//                snprintf (buf, sizeof (buf), "(HTYPE!=%d)&&(HTYPE!=%d)&&HVADDR&&HLEAKED",
-//                        FREE_TRACE, MUNMAP_TRACE);
-//                specify_metric (buf, "1"));
-//                cmd = "heapleakcnt"));
-//                break;
-//            case HEAP_LEAK_BYTES:
-//                packet_type = ProfData_type.DATA_HEAP;
-//                username = "Bytes Leaked"));
-//                snprintf (buf, sizeof (buf), "(HTYPE!=%d)&&(HTYPE!=%d)&&HVADDR"),
-//                        FREE_TRACE, MUNMAP_TRACE);
-//                specify_metric (buf, "HLEAKED"));
-//                cmd = "heapleakbytes"));
-//                break;
+            case HEAP_ALLOC_CNT:
+                packet_type = ProfData_type.DATA_HEAP;
+                username = "Allocations";
+                spec = String.format("(HTYPE!=%d)&&(HTYPE!=%d)&&HVADDR",
+                        Heap_type.FREE_TRACE.value, Heap_type.MUNMAP_TRACE.value);
+                specify_metric (spec, "1");
+                cmd = "heapalloccnt";
+                break;
+            case HEAP_ALLOC_BYTES:
+                packet_type = ProfData_type.DATA_HEAP;
+                username = "Bytes Allocated";
+                spec = String.format("(HTYPE!=%d)&&(HTYPE!=%d)&&HVADDR",
+                        Heap_type.FREE_TRACE.value, Heap_type.MUNMAP_TRACE.value);
+                specify_metric(spec, "HSIZE");
+                cmd = "heapallocbytes";
+                break;
+            case HEAP_LEAK_CNT:
+                packet_type = ProfData_type.DATA_HEAP;
+                username = "Leaks";
+                spec = String.format("(HTYPE!=%d)&&(HTYPE!=%d)&&HVADDR&&HLEAKED",
+                        Heap_type.FREE_TRACE.value, Heap_type.MUNMAP_TRACE.value);
+                specify_metric (spec, "1");
+                cmd = "heapleakcnt";
+                break;
+            case HEAP_LEAK_BYTES:
+                packet_type = ProfData_type.DATA_HEAP;
+                username = "Bytes Leaked";
+                spec = String.format("(HTYPE!=%d)&&(HTYPE!=%d)&&HVADDR",
+                        Heap_type.FREE_TRACE.value, Heap_type.MUNMAP_TRACE.value);
+                specify_metric (spec, "HLEAKED");
+                cmd = "heapleakbytes";
+                break;
 //
 //            case IO_READ_CNT:
 //                packet_type = ProfData_type.DATA_IOTRACE;

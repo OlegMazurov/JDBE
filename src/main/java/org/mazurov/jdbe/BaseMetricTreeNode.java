@@ -85,7 +85,7 @@ public class BaseMetricTreeNode {
         return add_child(get_prof_data_type_name(t), get_prof_data_type_uname(t));
     }
 
-    private BaseMetricTreeNode find(String _name) {
+    BaseMetricTreeNode find(String _name) {
         if (_name == null) {
             return null;
         }

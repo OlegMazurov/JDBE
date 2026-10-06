@@ -16,4 +16,65 @@ along with this program. If not, see <http://www.gnu.org/licenses>. */
 package org.mazurov.jdbe;
 
 public class Histable {
+
+    protected String name;       // Object name
+    public long id;              // A unique id of this object, within its specific Type
+
+    public String get_name() {
+        return name;
+    }
+
+    public void set_name(String name) {
+        this.name = name;
+    }
+
+    public long get_size() {
+        return 0;
+    }
+
+    public long get_addr() {
+        return 0;
+    }
+
+    public enum Type {
+        INSTR, LINE, FUNCTION, MODULE, LOADOBJECT,
+        EADDR, MEMOBJ, INDEXOBJ, PAGE, DOBJECT,
+        SOURCEFILE, IOACTFILE, IOACTVFD, IOCALLSTACK,
+        HEAPCALLSTACK, EXPERIMENT, OTHER
+    };
+
+    public Type get_type () {
+        return Type.OTHER;
+    }
+
+    // NameFormat for functions and function based objects
+
+    public enum NameFormat {
+        NA(0), LONG(1), SHORT(2), MANGLED(3), SONAME(0x10),
+        LONG_SONAME(1 | 0x10), SHORT_SONAME(2 | 0x10), MANGLED_SONAME(3 | 0x10);
+
+        final int value;
+
+        NameFormat(int value) {
+            this.value = value;
+        }
+    };
+
+    static NameFormat make_fmt(int fnfmt, boolean sofmt) {
+        int v = sofmt ? (fnfmt | NameFormat.SONAME.value) : fnfmt;
+        for (NameFormat nf : NameFormat.values()) {
+            if (nf.value == v)
+                return nf;
+        }
+        return NameFormat.NA;
+    }
+
+    static int fname_fmt(NameFormat fmt) {
+        return fmt.value & ~NameFormat.SONAME.value;
+    }
+
+    static boolean soname_fmt(NameFormat fmt) {
+        return (fmt.value & NameFormat.SONAME.value) != 0;
+    }
+
 }
