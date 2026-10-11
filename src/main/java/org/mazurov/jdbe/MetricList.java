@@ -156,6 +156,16 @@ public class MetricList {
         for (Metric m : items) {
             if (m.get_subtype() == BaseMetric.STATIC && m.get_type() != BaseMetric.Type.ONAME)
                 m.set_raw_visbits(VAL_NA);
+            else if ((mtype == MetricType.MET_CALL || mtype == MetricType.MET_CALL_AGR)
+                    && (m.get_subtype() == BaseMetric.EXCLUSIVE || m.get_subtype() == BaseMetric.INCLUSIVE))
+                // Native shows only the ATTRIBUTED column by default for Caller-Callees/
+                // Call Tree metric lists -- the EXCLUSIVE/INCLUSIVE entries added above
+                // alongside it exist only so the GUI can toggle them on, default-hidden
+                // (confirmed against the oracle's -callers-callees output, which shows
+                // only "Attr." columns -- and PathTree.compute_metrics_call's CALLERS/
+                // CALLEES aggregation never populates these columns in the first place,
+                // since it only attributes the ATTRIBUTED subtype).
+                m.set_raw_visbits(VAL_NA);
             else {
                 m.enable_all_visbits();
                 m.set_raw_visbits(m.get_visbits() & ~VAL_PERCENT);
@@ -232,8 +242,6 @@ public class MetricList {
         throw new RuntimeException("MetricList.set_sort not implemented");
     }
 
-    // Mirrors native's MetricList::set_sort(int, bool) (MetricList.cc:618-632): set_sort
-    // by the visible column index the GUI sends (Analyzer, not er_print).
     public void set_sort(int visindex, boolean reverse) {
         if (visindex < items.size()) {
             Metric mitem = items.get(visindex);
@@ -243,17 +251,10 @@ public class MetricList {
                 return;
             }
         }
-        // Native falls back here to set_fallback_sort(), which goes through the
-        // string-based sort-spec parser this port's set_sort(String,...) doesn't
-        // implement yet. Not reachable from the GUI in practice (it only ever sends the
-        // index of a column it is itself displaying, hence visible), so left unported.
         throw new RuntimeException(
                 "MetricList.set_sort: fallback sort not implemented (visindex=" + visindex + ")");
     }
 
-    // Mirrors native's MetricList::find_metric(char*, BaseMetric::SubType)
-    // (MetricList.cc:801-808), simplified to a direct cmd+subtype match (native's
-    // get_listorder() indirection isn't needed here).
     public Metric find_metric(String cmd, int subtype) {
         for (Metric m : items) {
             if (m.get_subtype() == subtype && Objects.equals(m.get_cmd(), cmd))
@@ -262,10 +263,6 @@ public class MetricList {
         return null;
     }
 
-    // Mirrors native's MetricList::set_sort_metric (MetricList.cc:635-665), simplified:
-    // the 'any'/'all'/'hwc'/'bit' keyword forms are er_print "-sort" command-line
-    // syntax, not reachable from the GUI's column-click-driven setSort path that is
-    // this method's only caller in this port (DbeView.setSort cross-tab sync).
     public boolean set_sort_metric(String mname, int subtype, boolean reverse) {
         for (int i = 0; i < items.size(); i++) {
             Metric m = items.get(i);

@@ -89,6 +89,7 @@ public class Experiment {
         long tid;
         long jthr;
         long jenv;
+        long jthr_id; // internal JThread object id, native: parse.cc:557,581 (jthreads.size() at registration)
         long start;
         long end;
     }
@@ -215,6 +216,12 @@ public class Experiment {
     List<GCEvent> gcevents = new ArrayList<>();
     List<JThread> jthreads = new ArrayList<>();
 
+    private final Map<Long, Integer> thrTagMap = new HashMap<>();
+
+    int mapThrid(long rawTid) {
+        return thrTagMap.computeIfAbsent(rawTid, k -> thrTagMap.size() + 1);
+    }
+
     static class SegMem {
         long base;
         long size;
@@ -236,11 +243,6 @@ public class Experiment {
         long ts;
     }
 
-    // Raw records collected during the SAX pass, always kept sorted by ts (mirrors
-    // native's mrec_insert): map.xml records aren't necessarily in ts order (e.g. the
-    // vdso "function" entries carry tstamp="0.0" but physically appear in the file
-    // after the segment entries), so overlap detection has to run in a second pass,
-    // over records in timestamp order, not file order.
     List<MapRecord> mrecs = new ArrayList<>();
 
     private void mrecInsert(MapRecord mrec) {
@@ -438,21 +440,8 @@ public class Experiment {
     }
 
     private static final String SP_OVERVIEW_FILE = "overview";
-    // sizeof(raw_prusage_64) (Exp_Layout.cc): 2 leading int32 fields (pr_lwpid,
-    // pr_count), then 20 timestruc_64 fields (14 real + 6 filler, 16 bytes each),
-    // then 22 uint64 fields (12 real + 10 filler, 8 bytes each).
     private static final int PRUSAGE64_SIZE = 8 + 20 * 16 + 22 * 8;
 
-    // Mirrors native's Experiment::read_overview_file (Experiment.cc:4852-4962),
-    // restricted to what this port actually needs: the piggyback
-    // "update_last_event(data->pr_tstamp)" on the final record (Experiment.cc:4953-4958).
-    // This is the ONLY eager, always-on timestamp source feeding the "Experiment Ended"/
-    // "Data Collection Duration" header fields -- native resolves clock-profile data
-    // lazily (get_profile_events(), gated by "read_ahead") and heap-trace data lazily
-    // (get_heap_events(), only when a heap view is actually requested), and
-    // write_header() runs once, at open() time, before any view is dispatched. The
-    // samples/PrUsage bookkeeping (Sample start/end times, per-field deltas) that native
-    // builds from this file isn't ported -- nothing else in this port consumes it.
     void read_overview_file() {
         File f = new File(String.format("%s/%s", expt_name, SP_OVERVIEW_FILE));
         byte[] data;
@@ -471,16 +460,6 @@ public class Experiment {
         update_last_event(tvSec * NANOSEC + tvNsec);
     }
 
-    // Mirrors native's alloc/free address-matching pass in Experiment::get_heap_events()
-    // (Experiment.cc:3574-3789) + the HeapMap class (HeapMap.h/.cc): walk heap-trace
-    // records in timestamp order, tracking the most recent allocation at each address,
-    // and zero out HLEAKED for any allocation later matched by a free/munmap at the
-    // same address -- whatever's never matched by experiment end stays "leaked"
-    // (HLEAKED == HSIZE). Simplified relative to native: REALLOC_TRACE/MMAP_TRACE/
-    // MUNMAP_TRACE aren't exercised by this port's test data (0 such records here) and
-    // are handled with a direct, un-chunked interpretation rather than native's full
-    // partial-unmap bookkeeping (HeapMap's UnmapChunk list) -- revisit if a future
-    // experiment actually has mmap/munmap heap-trace records.
     private void compute_heap_leaked(DataDescriptor dDscr) {
         PropDescr hleakedProp = new PropDescr(Prop_type.PROP_HLEAKED, "HLEAKED");
         hleakedProp.vtype = VType_type.TYPE_UINT64;
@@ -598,11 +577,8 @@ public class Experiment {
                     case TYPE_INT64, TYPE_UINT64 -> u64(buf, fieldOff);
                     default -> 0;
                 };
-                // TODO: native remaps this through mapTagValue() (a session-wide
-                // per-property tag registry assigning compact display ids) -- not yet
-                // ported; storing the raw id directly instead, the same simplification
-                // already used for jthread tid in process_jthr_start_cmd/_end_cmd.
-                dDscr.setValue(field.propID().ordinal(), recn, raw);
+                long val = field.propID() == Prop_type.PROP_THRID ? mapThrid(raw) : raw;
+                dDscr.setValue(field.propID().ordinal(), recn, val);
                 continue;
             }
             switch (field.vtype()) {
@@ -772,10 +748,6 @@ public class Experiment {
         return exp_start_time;
     }
 
-    // Mirrors native's Experiment::getRelativeStartTime (Experiment.cc:2989-2999):
-    // delta between this experiment's start and its founder's start, for fork/exec
-    // descendant-process chains. This port has no founder/descendant tracking (every
-    // experiment is its own founder), so the delta is always 0.
     public long getRelativeStartTime() {
         return 0;
     }
@@ -784,7 +756,6 @@ public class Experiment {
         return start_sec;
     }
 
-    // Mirrors native's Experiment::getLastEvent (Experiment.h:209-214).
     public long getLastEvent() {
         return last_event != ZERO_TIME ? last_event : exp_start_time;
     }
@@ -900,36 +871,37 @@ public class Experiment {
 
     void process_jthr_start_cmd(String cmd, String name, String grpname, String prntname,
                                  long tid, long jthr, long jenv, long ts) {
-        // TODO: tid is stored raw here; native remaps it through mapTagValue() (a
-        // session-wide per-property tag registry, not yet ported) to get a compact
-        // display tag. Also skips maintaining the tid-sorted jthreads_idx (used later
-        // for stack-sample thread lookup). Neither matters for header display.
+        // Skips maintaining the tid-sorted jthreads_idx (used natively for a binary
+        // search; this port's linear scan over the much smaller jthreads list doesn't
+        // need it, per map_pckt_to_Jthread's own doc comment).
         JThread jthread = new JThread();
         jthread.name = name;
         jthread.group_name = grpname;
         jthread.parent_name = prntname;
-        jthread.tid = tid;
+        jthread.tid = mapThrid(tid); // native: parse.cc:554
         jthread.jthr = jthr;
         jthread.jenv = jenv;
+        jthread.jthr_id = jthreads.size(); // native: parse.cc:557
         jthread.start = ts;
         jthread.end = MAX_TIME;
         jthreads.add(jthread);
     }
 
     void process_jthr_end_cmd(String cmd, long tid, long jthr, long jenv, long ts) {
-        // TODO: tid is stored raw here; native remaps it through mapTagValue()
+        long ttid = mapThrid(tid); // native: parse.cc:531
         JThread jthread = null;
         for (JThread jt : jthreads) {
-            if (jt.tid == tid) {
+            if (jt.tid == ttid) {
                 jthread = jt;
                 break;
             }
         }
         if (jthread == null) {
             jthread = new JThread();
-            jthread.tid = tid;
+            jthread.tid = ttid; // native: parse.cc:554
             jthread.jthr = jthr;
             jthread.jenv = jenv;
+            jthread.jthr_id = jthreads.size(); // native: parse.cc:581
             jthread.start = ZERO_TIME;
             jthreads.add(jthread);
         }
@@ -1030,9 +1002,6 @@ public class Experiment {
         mrecInsert(mrec);
     }
 
-    // Processes the accumulated, now ts-sorted map records: builds up the "currently
-    // mapped" segment/function list and emits overlap warnings, mirroring native's
-    // read_map_file() post-processing loop over `mrecs`.
     private void processMapRecords() {
         for (MapRecord mrec : mrecs) {
             switch (mrec.kind) {
@@ -1099,14 +1068,6 @@ public class Experiment {
         return res;
     }
 
-    // Resolves a raw PC (as found in a native or Java call-stack chain) to the
-    // Function it falls within at the given sample timestamp. Mirrors native's
-    // Experiment::map_Vaddr_to_PC (Experiment.cc:5908-5959) + LoadObject::find_function
-    // (LoadObject.cc:434-498), simplified: real shared libraries have no per-function
-    // data (ELF symbol resolution is out of scope), so an address inside a
-    // LoadObject's mapped range but not covered by a specific known Function
-    // (map.xml "function"/"dynfunc"/"jcm" entry) resolves to one placeholder Function
-    // per LoadObject, standing in for native's synthesized "plug the hole" statics.
     Function map_Vaddr_to_PC(long addr, long ts) {
         ensureSegIndex();
         SegMem best = null;
@@ -1130,17 +1091,6 @@ public class Experiment {
         return lo.placeholderFunc;
     }
 
-    // Resolves one Java call-stack frame to the JMethod it represents. This is a
-    // *different* resolution path from map_Vaddr_to_PC: a uidj chain's paired values
-    // are NOT code addresses -- they're (bci, jmethodID) pairs following the
-    // JVMTI/AsyncGetCallTrace ABI (JVMPI_CallFrame{lineno,jmethodID},
-    // libcollector/jprofile.c:43-56), resolved through jmaps (the same method_id
-    // index read_java_classes_file() already builds), entirely independent of the
-    // map.xml segment/jcm address-range machinery. Mirrors native's
-    // Experiment::map_jmid_to_PC (Experiment.cc:6008-6025), simplified: bci-level
-    // granularity (line/source mapping) and the JNI-transition frame-splicing native
-    // does for bci == JNI_MARKER (-3) aren't needed for a flat function list, so both
-    // are dropped -- a JNI-marker frame just resolves to the JMethod like any other.
     Function map_jmid_to_PC(long mid, long ts) {
         if (mid == 0)
             return DbeSession.getInstance().getJUnknownFunction();
@@ -1150,19 +1100,8 @@ public class Experiment {
         return jm;
     }
 
-    // Sentinel distinguishing "no registered JThread at all for this (tid, ts)" from
-    // "registered, and this specific JThread object was found" (which can itself be a
-    // JVM-internal/system thread -- checked separately via group_name). Mirrors
-    // native's JTHREAD_NONE macro ((JThread*)-1); JTHREAD_DEFAULT is plain null here,
-    // matching native's (JThread*)0.
     private static final JThread JTHREAD_NONE = new JThread();
 
-    // Finds the JThread that owns raw thread id `tid` at time `ts` (a tid can be
-    // reused over time by different logical threads, so both must match). Linear
-    // scan over `jthreads`, which is small (tens to low hundreds of entries) even
-    // though this runs per-sample; native's jthreads_idx binary search is an
-    // optimization we don't need at this scale. Mirrors native's
-    // Experiment::map_pckt_to_Jthread (Experiment.cc:6286-6311).
     private JThread map_pckt_to_Jthread(long tid, long ts) {
         if (!has_java)
             return null; // JTHREAD_DEFAULT
@@ -1172,23 +1111,24 @@ public class Experiment {
         return JTHREAD_NONE;
     }
 
-    // Resolves one clock-profile sample to an ordered call stack, leaf (top-of-stack
-    // / currently executing) first, root (outermost caller) last -- matching native's
-    // CallStack/PathTree stack-array convention. Mirrors native's
-    // CallStackP::add_stack_java_epilogue (CallStack.cc:421-468): regardless of
-    // whether a Java or native stack would otherwise resolve, a sample belonging to a
-    // thread that isn't a genuine user Java thread (either not registered as a Java
-    // thread at all, or registered but flagged group_name=="system" -- GC/compiler/
-    // etc internal threads) gets attributed entirely to <JVM-System> instead.
-    // Simplified relative to native's CallStackP::add_stack: native also interleaves
-    // the native (uidn) and Java (uidj) chains, splicing in native frames at each JNI
-    // transition point within the Java chain (matched by name via JMethod::jni_match);
-    // we don't do that splicing -- whenever a JAVA_INFO sub-record exists at all for
-    // this sample (fp.uidj != null), we use the Java-resolved stack as-is, even if
-    // every frame resolves to the <no Java callstack recorded> placeholder (matching
-    // native, which never falls back to the native stack just because Java
-    // resolution didn't find real names). The native stack is only used when there's
-    // no Java stack at all.
+    record ThreadName(String name, boolean isFinal) {}
+
+    ThreadName describeThread(long thrid, long ts) {
+        if (has_java) {
+            JThread jthread = map_pckt_to_Jthread(thrid, ts);
+            if (jthread != null && jthread != JTHREAD_NONE) {
+                return new ThreadName(String.format(
+                        "Process %d, Thread %d, JThread %d '%s', Group '%s', Parent '%s'",
+                        getUserExpId(), thrid, jthread.jthr_id,
+                        jthread.name == null ? "" : jthread.name,
+                        jthread.group_name == null ? "" : jthread.group_name,
+                        jthread.parent_name == null ? "" : jthread.parent_name),
+                        true);
+            }
+        }
+        return new ThreadName(String.format("Process %d, Thread %d", getUserExpId(), thrid), !has_java);
+    }
+
     List<Function> resolveStack(long frinfo, long thrid, long ts) {
         RawFramePacket fp = frmpckts.get(frinfo);
         Function unknown = DbeSession.getInstance().getUnknownFunction();
@@ -1229,11 +1169,6 @@ public class Experiment {
         return List.of(unknown);
     }
 
-    // Simplified relative to native's PRBTree-based "maps" (an address/time interval
-    // tree that supports out-of-order insertion); since processMapRecords() already
-    // replays records in timestamp order, a linear scan of currently-active segments
-    // is equivalent. Returns false if this record turned out to be a duplicate load
-    // (matches native: skip silently, without warning or inserting).
     private boolean checkSegOverlap(SegMem smem) {
         SegMem lo = null;
         for (SegMem other : activeSegs) {
@@ -1286,15 +1221,6 @@ public class Experiment {
         mrecInsert(mrec);
     }
 
-    // methodId/classId -> object, versioned by the timestamp the mapping became valid
-    // (a class's own load time for classes; that same class-load time for its
-    // methods, since a class's methods are always registered together with it in
-    // jclasses). Mirrors native's `jmaps` (a PRBTree, i.e. a persistent/versioned
-    // red-black tree); simplified here to a plain sorted-by-timestamp map per id,
-    // since nothing in this port ever removes an entry (native's own
-    // process_jcm_unload_cmd is a documented no-op, and ARCH_JUNLOAD_TYPE is dead/
-    // unhandled in native itself), so a lookup is just "the latest registration at or
-    // before this timestamp" -- a floor query.
     private final Map<Long, TreeMap<Long, Object>> jmaps = new HashMap<>();
 
     private void jmapsInsert(long id, long ts, Object obj) {
@@ -1616,8 +1542,6 @@ public class Experiment {
             resume_ts = MAX_TIME; // collection is paused
         }
 
-        // GC: prune events outside of experiment duration, calculate GC duration,
-        // renumber ids
         gc_duration = ZERO_TIME;
         gcevents.removeIf(gcevent -> gcevent.end - exp_start_time < 0 || last_event - gcevent.start < 0);
         for (int index = 0; index < gcevents.size(); index++) {
@@ -1631,19 +1555,6 @@ public class Experiment {
         }
     }
 
-    // Opens the experiment directory and reads enough of it (log.xml + notes +
-    // jclasses + map.xml + data.frameinfo + profile) to populate the header display,
-    // the segment/dynamic-function/Java-method registries, the frame/uid stack graph,
-    // and the raw clock-profile sample records. read_java_classes_file() must run
-    // before read_map_file(): map.xml's "jcm" events resolve their methodId through
-    // jmaps, which read_java_classes_file() populates (matches native's own ordering,
-    // Experiment.cc:1690-1695). Does NOT yet read dyntext/overview/archives (native-
-    // library symbol resolution, out of scope) or jdynclasses (dynamically-generated
-    // class bytecode, only needed for source/disassembly views), the separate legacy
-    // warnings file, nor the actual PC-address stack materialization from a sample's
-    // resolved frame chain (still needed before a -functions view can aggregate
-    // anything -- see Experiment.map_Vaddr_to_PC for the address->Function half of
-    // that, and the not-yet-written PathTree-equivalent for the rest).
     Exp_status open(String path) {
         if (find_expdir(path) != Exp_status.SUCCESS)
             return status;
@@ -1669,8 +1580,6 @@ public class Experiment {
         File mapFile = new File(String.format("%s/%s", expt_name, SP_MAP_FILE));
         if (!mapFile.exists())
             return;
-        // map.xml has the same "sequence of top-level elements, no enclosing root"
-        // shape as log.xml, and is parsed with the same handler.
         try (InputStream body = new FileInputStream(mapFile);
              InputStream in = new SequenceInputStream(java.util.Collections.enumeration(List.of(
                      new ByteArrayInputStream(("<" + ExperimentHandler.SP_TAG_LOG_WRAPPER + ">").getBytes()),
@@ -1690,10 +1599,6 @@ public class Experiment {
 
         processMapRecords();
 
-        // See if there are comments or warnings for a load object; if so, queue them
-        // to the experiment. (Native also does this for comments; we only have
-        // warnings currently, since fetch_warnings()/fetch_comments() on LoadObject
-        // aren't populated by anything yet beyond the TODO stub.)
         for (LoadObject lo : DbeSession.getInstance().get_LoadObjects()) {
             Emsg m = lo.fetch_warnings();
             if (m != null)
@@ -1766,8 +1671,6 @@ public class Experiment {
 
         String startMsg;
         if (start_sec != 0) {
-            // ctime()'s format, minus the timezone (native ctime() never includes one;
-            // we use UTC here rather than local time), plus its embedded trailing newline
             java.time.ZonedDateTime zdt = java.time.Instant.ofEpochSecond(start_sec).atZone(java.time.ZoneOffset.UTC);
             String formatted = zdt.format(java.time.format.DateTimeFormatter.ofPattern("EEE MMM d HH:mm:ss yyyy", java.util.Locale.US));
             startMsg = String.format("Experiment started %s%n", formatted);
@@ -2928,9 +2831,6 @@ public class Experiment {
         return dataDscrs[idx];
     }
 
-    // Mirrors native's Experiment::getDataDescriptors (returns every registered
-    // DataDescriptor); "data_id" (the DataDescriptor's getId()) is the same as its
-    // ProfData_type ordinal, which is how get_raw_events looks it back up.
     public List<DataDescriptor> getDataDescriptors() {
         List<DataDescriptor> list = new ArrayList<>();
         for (DataDescriptor d : dataDscrs)

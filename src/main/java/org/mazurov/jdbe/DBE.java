@@ -57,10 +57,6 @@ public class DBE {
         return error;
     }
 
-    // Mirrors native's dbeGetFounderExpId (Dbe.cc:518-535), simplified: native tracks
-    // fork/exec process-descendant chains (exp->getBaseFounder()) so a descendant
-    // process reports the root ancestor's experiment id; this port has no such
-    // descendant tracking, so every experiment is its own founder.
     public static int[] dbeGetFounderExpId(int[] expIds) {
         int[] ret = new int[expIds.length];
         for (int i = 0; i < expIds.length; i++) {
@@ -70,8 +66,6 @@ public class DBE {
         return ret;
     }
 
-    // Mirrors native's dbeGetUserExpId (Dbe.cc:537-...): the "user visible" id used for
-    // EXPID filters and timeline processes.
     public static int[] dbeGetUserExpId(int[] expIds) {
         int[] ret = new int[expIds.length];
         for (int i = 0; i < expIds.length; i++) {
@@ -81,10 +75,6 @@ public class DBE {
         return ret;
     }
 
-    // Mirrors native's dbeGetExpGroupId (Dbe.cc:561-577): the compare-group id
-    // (Experiment::groupId). This port has no expGroups/compare-group mechanism, so
-    // every experiment stays at its default, un-grouped value (0, matching native's own
-    // Experiment constructor default before any group assignment happens).
     public static int[] dbeGetExpGroupId(int[] expIds) {
         int[] ret = new int[expIds.length];
         for (int i = 0; i < expIds.length; i++) {
@@ -265,12 +255,6 @@ public class DBE {
             user_name[idx] = m.get_username();
             expr_spec[idx] = m.get_expr_spec();
 //            legend->append (dbe_strdup (m->legend));
-            // Mirrors native's m->get_vtype2() (Metric.cc:66-...): a compare-mode-aware
-            // wrapper around get_vtype() that only adjusts the tag for VAL_DELTA/VAL_RATIO
-            // visbits, neither of which this port's metrics ever set (no compare mode) --
-            // so plain get_vtype() is equivalent here. The wire value is native's
-            // ValueTag enum (VT_SHORT=1, ...), i.e. this enum's ordinal()+1 (see
-            // ValueTag.values[]'s matching 1-based offset just above).
             valtype[idx] = m.get_vtype().ordinal() + 1;
 //
             String _data_type_name = null;
@@ -352,19 +336,6 @@ public class DBE {
         return dbeGetMetricTreeNode(curr, mlist, include_unregistered, has_clock_profiling_data);
     }
 
-    // Minimal stub for native's dbeGetRefMetricTreeValues (Dbe.cc:1534-~1800): that
-    // function computes real per-metric <Total> values, HWC-cycles-to-time conversion,
-    // and "which column is hot" highlighting, across compare groups. None of that is
-    // ported here -- this just returns correctly-shaped, all-zero/false tables (right
-    // column/row counts) so the metrics-tree UI doesn't abort on an unrecognized
-    // response shape. Revisit if the GUI's metric picker needs real preview values.
-    // Mirrors native's dbeGetRefMetricTreeValues (Dbe.cc:1534-~1800), simplified: no
-    // compare-group support (ngroups is always 1 -- see dbeGetExpGroupId's own doc
-    // comment), no HWC-cycles-to-time conversion (no HWC metrics in this port), and
-    // "non_metric_cmds" (e.g. experiment/GC duration pseudo-columns) aren't computed,
-    // left as 0 -- revisit if the Overview window needs those specifically. The real
-    // per-metric <Total> values now come from the same get_hist_data/get_value_for_total
-    // machinery verified against the oracle for -functions.
     public static Object[] dbeGetRefMetricTreeValues(int dbevindex, String[] metricCmds, String[] nonMetricCmds) {
         DbeView dbev = DbeSession.getInstance().getView(dbevindex);
         int numMetrics = metricCmds != null ? metricCmds.length : 0;
@@ -390,10 +361,6 @@ public class DBE {
             baseMetrics.add(bm);
             columnOf.add(i);
         }
-        // MET_SRCDIS yields one (INCLUSIVE) Metric per BaseMetric -- exactly one column
-        // per requested metric_cmd. The <Total> row's EXCLUSIVE/INCLUSIVE values are
-        // always identical (PathTree.compute_metrics sets both from the same grand
-        // total), so INCLUSIVE-only is sufficient here.
         MetricList bmlist = new MetricList(baseMetrics, MetricType.MET_SRCDIS);
         Hist_data data = dbev.get_hist_data(bmlist, Histable.Type.FUNCTION, 0, Hist_data.Mode.ALL);
         int bestCpuTimeIndx = -1;
@@ -415,10 +382,6 @@ public class DBE {
         return new Object[] { valueTable, highlightTable };
     }
 
-    // Mirrors native's convert_visbits_to_gui_checkbox_bits (Dbe.cc:1259-1281): when a
-    // metric supports VAL_TIMEVAL but not VAL_VALUE (e.g. CP_TOTAL_CPU), the GUI's
-    // checkbox bit for "show by default" is VAL_TIMEVAL, not VAL_VALUE, even though
-    // Metric/BaseMetric otherwise use VAL_VALUE to mean "enabled".
     private static int convertVisbitsToGuiCheckboxBits(BaseMetric bm, int visbits) {
         int valuebits = visbits;
         int value_styles = bm.get_value_styles();
@@ -465,14 +428,6 @@ public class DBE {
             // matching ordinal()+1 conversion in dbeGetMetricList's valtype[] above.
             _vtype = bm.get_vtype().ordinal() + 1;
             _vstyles_capable = bm.get_value_styles();
-            // Mirrors native's BaseMetric::default_visbits, which is only ever populated
-            // by MetricList::setMetrics(DEFAULT_METRICS, fromRcFile=true) -- a full
-            // dmetrics-command-string parser this port doesn't have. Substituting the
-            // same simpler rule this port's own MetricList constructor already uses (and
-            // has verified against the oracle) for "is this metric shown by default":
-            // every EXCLUSIVE/INCLUSIVE metric is on, with its supported styles minus
-            // the percent column; STATIC metrics (other than ONAME, which the GUI
-            // apparently always shows regardless of these bits) are off.
             int defaultStyles = (bm.hasFlavor(BaseMetric.EXCLUSIVE) || bm.hasFlavor(BaseMetric.INCLUSIVE))
                     ? bm.get_value_styles() & ~VAL_PERCENT : 0;
             _vstyles_e_default_values = convertVisbitsToGuiCheckboxBits(bm, defaultStyles);
@@ -624,9 +579,6 @@ public class DBE {
 
         // make sure the tabs are initialized properly
         dbev.get_settings().proc_tabs(DbeApplication.getInstance().rdtMode);
-        // Mirrors native's DbeSession::check_tab_avail(), called after every experiment
-        // load (DbeSession.cc:1884-1894); done lazily here instead since this port has
-        // no equivalent hook wired into every load path yet.
         dbev.get_settings().updateTabAvailability();
         DispTab[] tabs = dbev.get_TabList();
 
@@ -696,11 +648,6 @@ public class DBE {
         return states;
     }
 
-    // Mirrors native's MemorySpace::getMemObjects (MemorySpace.cc:218-262), simplified:
-    // this port has no dataspace/memory-object subsystem (dyn_memobj is always empty),
-    // so each of the 8 fields is an empty array -- but the OUTER array must still have
-    // exactly 8 elements; the GUI indexes into it unconditionally regardless of whether
-    // any memory objects are actually defined.
     public static Object[] dbeGetMemObjects(int dbevindex) {
         return new Object[] {
                 new int[0], new String[0], new char[0], new String[0],
@@ -931,7 +878,6 @@ public class DBE {
         throw new RuntimeException("dbeGetLoadObjectName not implemented");
     }
 
-    // Mirrors native's dbeGetSearchPath/dbeSetSearchPath (Dbe.cc:981-1004).
     public static String[] dbeGetSearchPath(int dbevindex) {
         return DbeSession.getInstance().get_search_path().toArray(new String[0]);
     }
@@ -940,7 +886,6 @@ public class DBE {
         DbeSession.getInstance().set_search_path(Arrays.asList(path), true);
     }
 
-    // Mirrors native's dbeGetPathmaps/dbeSetPathmaps/dbeAddPathmap (Dbe.cc:1006-1060).
     public static Object[] dbeGetPathmaps(int dbevindex) {
         List<DbeStructs.PathMap> path = DbeSession.getInstance().get_pathmaps();
         String[] oldlist = new String[path.size()];
@@ -971,10 +916,6 @@ public class DBE {
         return Settings.add_pathmap(DbeSession.getInstance().get_pathmaps(), from, to);
     }
 
-    // Mirrors native's dbeGetOverviewText (Dbe.cc:1902-1964), simplified: no compare-group
-    // support (ngroups is always 1 here -- this port has no expGroups mechanism yet), so
-    // the "Base Group"/"Compare Group N" header variants and multi-experiment-per-group
-    // text aren't ported.
     public static String[] dbeGetOverviewText(int dbevindex) {
         List<String> info = new ArrayList<>();
         if (DbeSession.getInstance().nexps() == 0)
@@ -998,9 +939,6 @@ public class DBE {
         return info.toArray(new String[0]);
     }
 
-    // Mirrors native's dbeGetMsg (Dbe.cc:1064-1080). Message_type enums.h: ERROR_MSG=1,
-    // WARNING_MSG=2, PSTAT_MSG=3, PWARN_MSG=4 -- processor status messages (3/4) aren't
-    // ported (no processor-usage subsystem in this port).
     public static String dbeGetMsg(int dbevindex, int type) {
         DbeView dbev = DbeSession.getInstance().getView(dbevindex);
         if (type == 1)
@@ -1010,17 +948,15 @@ public class DBE {
         return null;
     }
 
-    // Mirrors native's dbeSetFuncData (Dbe.cc:3687-...), restricted to DSP_FUNCTION --
-    // the function list, which is this port's only implemented Histable.Type so far
-    // (DbeView.get_hist_data). sel_obj resolution to a previously-selected row (native's
-    // "find org_obj in the new data, or match by line/pc for DSP_LINE/DSP_PC") isn't
-    // ported since this port has no Histable-object-ID registry yet (see dbeGetSelObj) --
-    // sel_index is always -1 (no row pre-selected), matching native's own behavior when
-    // sel_obj is 0/unset, which is the case on first load.
     public static int dbeSetFuncData(int dbevindex, long sel_obj, int type, int subtype) {
         DbeView dbev = DbeSession.getInstance().getView(dbevindex);
         dbev.error_msg = null;
         dbev.warning_msg = null;
+        if (type == FuncListDisp_type.DSP_CALLER.value || type == FuncListDisp_type.DSP_CALLEE.value
+                || type == FuncListDisp_type.DSP_SELF.value) {
+            dbeSetSelObjV2(dbevindex, sel_obj);
+            return -1;
+        }
         if (type != FuncListDisp_type.DSP_FUNCTION.value) {
             dbev.warning_msg = "DSP type not yet supported by this port";
             return -1;
@@ -1055,7 +991,6 @@ public class DBE {
         throw new RuntimeException("dbeSetCurMetricsV2 not implemented");
     }
 
-    // Mirrors native's dbeSetSort (Dbe.cc:1970-1979).
     public static void dbeSetSort(int dbevindex, int sort_index, int mtype, boolean reverse) {
         DbeView dbev = DbeSession.getInstance().getView(dbevindex);
         dbev.setSort(sort_index, MetricType.valueOf(mtype), reverse);
@@ -1100,7 +1035,6 @@ public class DBE {
         throw new RuntimeException("dbeSetFilterStr not implemented");
     }
 
-    // Mirrors native's dbeGetFilterStr (Dbe.cc:2439-2447).
     public static String dbeGetFilterStr(int dbevindex) {
         return DbeSession.getInstance().getView(dbevindex).get_filter();
     }
@@ -1141,16 +1075,20 @@ public class DBE {
         throw new RuntimeException("dbeDefineIndxObj not implemented");
     }
 
-    // Minimal stand-in for native's per-DbeView sel_obj tracking (Dbe.cc:2975-3100),
-    // which resolves/stores actual Histable objects via dbeSession->findObjectById().
-    // This port has no such object-ID registry yet, so these just round-trip the raw id
-    // the GUI gave us, keyed by (dbevindex, type, subtype) for V1 / dbevindex for V2 --
-    // enough for "select a row, read the selection back" without the full registry.
-    private static final Map<String, Long> selObj = new HashMap<>();
     private static final Map<Integer, Long> selObjV2 = new HashMap<>();
 
     public static void dbeSetSelObj(int dbevindex, long id, int type, int subtype) {
-        selObj.put(dbevindex + ":" + type + ":" + subtype, id);
+        if (type == FuncListDisp_type.DSP_FUNCTION.value) {
+            DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+            Hist_data data = dbev.func_data;
+            int selInd = (int) id;
+            if (data != null && data.get_status() == Hist_data.Hist_status.SUCCESS
+                    && selInd >= 0 && selInd < data.size()) {
+                Histable obj = data.fetch(selInd).obj;
+                if (obj != null)
+                    dbeSetSelObjV2(dbevindex, obj.id);
+            }
+        }
     }
 
     public static void dbeSetSelObjV2(int dbevindex, long id) {
@@ -1158,34 +1096,47 @@ public class DBE {
     }
 
     public static long dbeGetSelObj(int dbevindex, int type, int subtype) {
-        return selObj.getOrDefault(dbevindex + ":" + type + ":" + subtype, 0L);
+        if (type == FuncListDisp_type.DSP_FUNCTION.value)
+            return selObjV2.getOrDefault(dbevindex, 0L);
+        return 0L;
     }
 
     public static long dbeGetSelObjV2(int dbevindex, String typeStr) {
-        return selObjV2.getOrDefault(dbevindex, 0L);
+        return selObjV2.getOrDefault(dbevindex, -1L);
     }
 
-    // Mirrors native's dbeGetSelIndex (Dbe.cc:3237-~3310): finds the row index of a
-    // given sel_obj (a Histable pointer) within the relevant Hist_data's hist_items,
-    // with special-cased matching for DSP_LINE/DSP_PC (same function, different
-    // line/pc). This port has no Histable-object-ID registry (see dbeGetSelObj's own
-    // doc comment) -- sel_obj here is just a round-tripped raw id, not a resolvable
-    // object reference, so there's no object to search hist_items for. Native itself
-    // returns -1 whenever sel_obj is 0/null (nothing selected), which is the common case
-    // for a freshly loaded experiment and the only case this port can match faithfully.
     public static int dbeGetSelIndex(int dbevindex, long sel_obj, int type, int subtype) {
+        if (type != FuncListDisp_type.DSP_FUNCTION.value)
+            return -1;
+        DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+        Hist_data data = dbev.func_data;
+        if (data == null || data.get_status() != Hist_data.Hist_status.SUCCESS)
+            return -1;
+        Histable chk_obj = DbeSession.getInstance().findObjectById(sel_obj);
+        if (chk_obj == null)
+            return -1;
+        for (int i = 0; i < data.size(); i++)
+            if (data.fetch(i).obj == chk_obj)
+                return i;
         return -1;
     }
 
     public static String dbePrintData(int dbevindex, int type, int subtype, String printer,
                                        String fname, PrintStream outfile) {
-        throw new RuntimeException("dbePrintData not implemented");
+        if (type != FuncListDisp_type.DSP_INDXOBJ.value)
+            throw new RuntimeException("DBE.dbePrintData: only DSP_INDXOBJ is implemented");
+        DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+        MetricList mlist = dbev.get_metric_list(MetricType.MET_INDX);
+        Hist_data data = dbev.get_hist_data(mlist, Histable.Type.INDEXOBJ, subtype, Hist_data.Mode.ALL);
+        if (data.get_status() != Hist_data.Hist_status.SUCCESS)
+            return DbeView.status_str(DbeView.DbeView_status.DBEVIEW_NO_DATA);
+        Print.er_print_histogram cd = new Print.er_print_histogram(dbev, data, mlist,
+                Print.Print_mode.MODE_LIST, dbev.get_limit(), mlist.get_sort_name(), null, true, true);
+        cd.set_out_file(outfile);
+        cd.data_dump();
+        return null;
     }
 
-    // Mirrors native's dbeGetFuncList (Dbe.cc:4831-5084), restricted to DSP_FUNCTION
-    // (the only Histable.Type this port's get_hist_data computes). The "annotated
-    // src/dis/layout" ji_list column and per-type name formatting (DSP_SOURCE/DISASM/
-    // DLAYOUT) aren't ported -- not reachable since only func_data exists.
     public static Object[] dbeGetFuncList(int dbevindex, int type, int subtype) {
         DbeView dbev = DbeSession.getInstance().getView(dbevindex);
         Hist_data data = (type == FuncListDisp_type.DSP_FUNCTION.value) ? dbev.func_data : null;
@@ -1219,11 +1170,6 @@ public class DBE {
         return table;
     }
 
-    // Mirrors native's dbeGetTableDataOneColumn(Hist_data*, int) (Dbe.cc:5514-5590),
-    // restricted to the vtypes this port's metrics actually use (VT_LABEL for the Name
-    // column, VT_DOUBLE for CPU-time seconds, VT_ULLONG/VT_LLONG for byte/count metrics
-    // -- see PathTree.setMetricValue). VAL_RATIO (percent column) isn't ported (never
-    // set by this port's MetricList).
     private static Object dbeGetTableDataOneColumn(Hist_data data, int metInd) {
         Metric m = data.get_metric_list().get(metInd);
         int nitems = (int) data.size();
@@ -1250,9 +1196,6 @@ public class DBE {
         };
     }
 
-    // Mirrors native's dbeGetFuncListMini (Dbe.cc:4746-4829), restricted to DSP_FUNCTION
-    // like dbeGetFuncList. Each column is a length-1 array holding only the <Total> row's
-    // value (no VT_INT/VT_ADDRESS/VAL_RATIO branches -- not used by this port's metrics).
     public static Object[] dbeGetFuncListMini(int dbevindex, int type, int subtype) {
         DbeView dbev = DbeSession.getInstance().getView(dbevindex);
         Hist_data data = (type == FuncListDisp_type.DSP_FUNCTION.value) ? dbev.func_data : null;
@@ -1285,17 +1228,6 @@ public class DBE {
         return table;
     }
 
-    // Mirrors native's dbeGetTableDataV2 (Dbe.cc:5372-5473) + dbeGetTableDataV2Data
-    // (Dbe.cc:5476-5510). Argument-string parsing mirrors native's own validation
-    // (returns null for a string native itself wouldn't recognize). The actual
-    // aggregation is delegated to DbeView.get_hist_data/PathTree.compute_metrics, which
-    // only implement Histable.Type.FUNCTION + Hist_data.Mode.ALL -- any other
-    // combination (Caller-Callees' CALLERS/CALLEES/SELF, Call Tree, Heap/IO call-stack
-    // views, index objects) throws there with a message naming the unsupported combo,
-    // rather than being speculatively special-cased here before it's actually hit.
-    // The cstack/ids filter (native: resolved to Histable* via findObjectById and used
-    // to pick the CALLERS/CALLEES root) is ignored -- this port has no object-ID
-    // registry (see dbeGetSelIndex) and the only mode it computes (ALL) doesn't use it.
     public static Object[] dbeGetTableDataV2(int dbevindex, String mlistStr, String modeStr,
                                               String typeStr, String subtypeStr, long[] ids) {
         DbeView dbev = DbeSession.getInstance().getView(dbevindex);
@@ -1376,10 +1308,6 @@ public class DBE {
         return table.toArray();
     }
 
-    // Mirrors native's dbeGetNames (Dbe.cc:5854-5919), restricted to the default case
-    // ("Name", "", "") -- DSP_FUNCTION itself falls through to that case natively too.
-    // DSP_SOURCE/DSP_DISASM/DSP_LINE/DSP_PC/DSP_DLAYOUT aren't ported (no source/disasm/
-    // line/pc display types in this port yet).
     public static String[] dbeGetNames(int dbevindex, int type, long sel_obj) {
         return new String[] { "Name", "", "" };
     }
@@ -1400,16 +1328,6 @@ public class DBE {
         throw new RuntimeException("dbeGetStatisList not implemented");
     }
 
-    // Mirrors native's dbeGetSummary (Dbe.cc:6687-7061), restricted to DSP_FUNCTION (the
-    // only display type this port's func_data/get_hist_data support) and -- per explicit
-    // user decision -- to the "Name" field of the name area. PC Address/Source File/
-    // Object File/Load Object/Mangled Name/Aliases all need source-file and module/
-    // load-object location-info machinery (DbeFile::get_location_info,
-    // Module::read_stabs) this port doesn't have, matching its earlier ELF/source-file
-    // scope decision; those fields are sent as null (label present, value blank) so the
-    // Summary panel's 8-field layout still matches what the GUI expects. The metrics
-    // area is fully real, built via the SELF-mode machinery PathTree.compute_metrics_call
-    // added for the Caller-Callees "function item" row.
     public static Object[] dbeGetSummary(int dbevindex, long[] selObjs, int type, int subtype) {
         DbeView dbev = DbeSession.getInstance().getView(dbevindex);
         if (selObjs == null || selObjs.length == 0 || type != FuncListDisp_type.DSP_FUNCTION.value)
@@ -1498,10 +1416,6 @@ public class DBE {
         return new Object[] { name_objs, metric_objs };
     }
 
-    // Grand total (the func_data <Total> row's value) for the metric matching
-    // (baseType, subtype), used as the percent denominator -- mirrors native's
-    // data->get_totals() (Dbe.cc:6908), simplified to look the metric up by identity in
-    // func_data's own metric list rather than needing a parallel totals structure.
     private static double findTotalValue(Hist_data funcData, BaseMetric.Type baseType, int subtype) {
         List<Metric> fItems = funcData.get_metric_list();
         for (int i = 0; i < fItems.size(); i++) {
@@ -1580,8 +1494,6 @@ public class DBE {
         throw new RuntimeException("dbeGetObject not implemented");
     }
 
-    // Mirrors native's dbeGetName (Dbe.cc:7326-7343): full experiment name with path,
-    // process name, and PID.
     public static String dbeGetName(int dbevindex, int expId) {
         int id = expId < 0 ? 0 : expId;
         Experiment exp = DbeSession.getInstance().get_exp(id);
@@ -1591,7 +1503,6 @@ public class DBE {
                 exp.getUtargname() != null ? exp.getUtargname() : "(unknown)", exp.getPID());
     }
 
-    // Mirrors native's dbeGetExpVerboseName (Dbe.cc:7345-7356).
     public static String[] dbeGetExpVerboseName(int[] expIds) {
         String[] list = new String[expIds.length];
         for (int i = 0; i < expIds.length; i++)
@@ -1599,8 +1510,6 @@ public class DBE {
         return list;
     }
 
-    // Mirrors native's dbeGetStartTime/dbeGetRelativeStartTime/dbeGetEndTime/
-    // dbeGetClock/dbeGetWallStartSec/dbeGetHostname (Dbe.cc:7358-7406).
     public static long dbeGetStartTime(int dbevindex, int expId) {
         Experiment exp = DbeSession.getInstance().get_exp(expId < 0 ? 0 : expId);
         return exp != null ? exp.getStartTime() : 0;
@@ -1634,7 +1543,6 @@ public class DBE {
             "NONE", "INT32", "UINT32", "INT64", "UINT64", "STRING", "DOUBLE", "OBJECT", "DATE", "BOOL", "ENUM"
     };
 
-    // Mirrors native's dbeGetDataDescriptorsV2 (Dbe.cc:8676-8706).
     public static Object[] dbeGetDataDescriptorsV2(int expId) {
         Experiment exp = DbeSession.getInstance().get_exp(expId);
         if (exp == null)
@@ -1660,7 +1568,6 @@ public class DBE {
         };
     }
 
-    // Mirrors native's dbeGetDataPropertiesV2 (Dbe.cc:8708-8775).
     public static Object[] dbeGetDataPropertiesV2(int expId, int dataId) {
         Experiment exp = DbeSession.getInstance().get_exp(expId);
         if (exp == null)
@@ -1709,7 +1616,6 @@ public class DBE {
         };
     }
 
-    // Mirrors native's dbeGetExperimentDataDescriptors (Dbe.cc:8817-8850).
     public static Object[] dbeGetExperimentDataDescriptors(int[] expIds) {
         int sz = expIds.length;
         Object[] expDscrInfo = new Object[sz];
@@ -1729,9 +1635,6 @@ public class DBE {
         return new Object[] { expDscrInfo, expDscrProps };
     }
 
-    // Mirrors native's dbeGetExperimentTimeInfo (Dbe.cc:8777-8815), simplified: no
-    // "force fetch data descriptors" workaround (this port doesn't defer experiment
-    // data loading, so there's nothing to force).
     public static Object[] dbeGetExperimentTimeInfo(int[] expIds) {
         int sz = expIds.length;
         long[] offsetTime = new long[sz];
@@ -1789,25 +1692,20 @@ public class DBE {
         throw new RuntimeException("dbeGetFuncNames not implemented");
     }
 
-    public static String[] dbeGetObjNamesV2(int arg1, long[] arg2) {
-        throw new RuntimeException("dbeGetObjNamesV2 not implemented");
+    public static String[] dbeGetObjNamesV2(int dbevindex, long[] ids) {
+        String[] res = new String[ids.length];
+        for (int i = 0; i < ids.length; i++)
+            res[i] = dbeGetObjNameV2(dbevindex, ids[i]);
+        return res;
     }
 
     public static String dbeGetFuncName(int arg1, long arg2) {
         throw new RuntimeException("dbeGetFuncName not implemented");
     }
 
-    // Mirrors native's dbeGetObjNameV2 (Dbe.cc:8647-8658): resolves an opaque object id
-    // (dbeSession->findObjectById) to its display name. This port has no Histable-
-    // object-ID registry (see dbeGetSelObj's own doc comment), so there's no real name
-    // to resolve to. Returning null here is unsafe -- at least one real GUI call site
-    // (AnTable's "Filter Similarly Named Function" action) passes the result straight
-    // into another call with no null-check, so a null would NPE every time that
-    // reachable, user-triggered action is used, not just in some rare edge case.
-    // Returning a visibly-fake placeholder instead of an empty string so it's obvious in
-    // the GUI that this still needs a real object-ID registry.
     public static String dbeGetObjNameV2(int dbevindex, long id) {
-        return "ObjName2";
+        Histable obj = DbeSession.getInstance().findObjectById(id);
+        return obj == null ? null : obj.get_name();
     }
 
     public static String dbeGetDataDescriptor(int arg0, long arg1) {

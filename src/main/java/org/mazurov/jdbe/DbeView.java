@@ -567,11 +567,6 @@ public class DbeView {
         throw new RuntimeException("DbeView.setSort not implemented");
     }
 
-    // Mirrors native's DbeView::setSort(int, MetricType, bool) (DbeView.cc:1145-1221):
-    // set sort from the visible column index (Analyzer GUI's "click a column header").
-    // Keeps the Functions (MET_NORMAL) and Caller-Callees/Call Tree (MET_CALL/
-    // MET_CALL_AGR) tabs' sort metrics in sync with each other, matched by username,
-    // so that switching tabs doesn't silently reset the sort order the user picked.
     public void setSort(int visindex, MetricType mtype, boolean reverse) {
         MetricList mlist = get_metric_list(mtype);
         List<Metric> items = mlist.get_items();
@@ -635,11 +630,6 @@ public class DbeView {
         }
     }
 
-    // Mirrors native's DbeView::resortData (DbeView.cc:1223-1281), restricted to the
-    // Hist_data caches this port actually has (func_data only -- no line_data/pc_data/
-    // callers/callees/dobj_data/etc. caches exist yet, so those cases are no-ops here;
-    // the next getTableDataV2/getFuncList call recomputes from the MetricList's
-    // now-updated sort_ref_index/sort_reverse regardless).
     public void resortData(MetricType mtype) {
         if (mtype == MetricType.MET_NORMAL && func_data != null) {
             MetricList mlist = get_metric_list(mtype);
@@ -736,8 +726,6 @@ public class DbeView {
     // created -- matches native's ptree/PATHTREE_MAIN (DbeView.h/.cc).
     private PathTree mainPathTree;
 
-    // Mirrors native's DbeView::func_data/error_msg/warning_msg (DbeView.h), populated by
-    // dbeSetFuncData and read back by dbeGetFuncList/dbeGetMsg.
     Hist_data func_data;
     String error_msg;
     String warning_msg;
@@ -746,14 +734,15 @@ public class DbeView {
         return get_hist_data(mlist, type, subtype, mode, null);
     }
 
-    // hobjs: the selected-object context for CALLERS/CALLEES/SELF (native's `objs`
-    // param to PathTree::compute_metrics) -- the Caller-Callees view's selected
-    // Function, resolved by the caller via DbeSession.findObjectById(). Unused for
-    // Mode.ALL.
     public Hist_data get_hist_data(MetricList mlist, Histable.Type type, int subtype, Hist_data.Mode mode,
                                     List<Histable> hobjs) {
+        if (type == Histable.Type.INDEXOBJ) {
+            Hist_data data = indxspaces.get(subtype).compute_metrics(mlist, type, mode, hobjs);
+            data.resort(mlist);
+            return data;
+        }
         if (type != Histable.Type.FUNCTION)
-            throw new RuntimeException("DbeView.get_hist_data: only Histable.Type.FUNCTION is implemented");
+            throw new RuntimeException("DbeView.get_hist_data: only Histable.Type.FUNCTION/INDEXOBJ is implemented");
         if (mainPathTree == null)
             mainPathTree = new PathTree(this);
         Hist_data hist_data = mainPathTree.compute_metrics(mlist, type, mode, hobjs);
@@ -764,9 +753,6 @@ public class DbeView {
         return hist_data;
     }
 
-    // The following dump_* methods print raw event records for debugging. They depend
-    // on get_filtered_events()/getStackPCs(), which are not yet ported (no DataView /
-    // event-filtering machinery exists in JDBE yet).
     public void dump_profile(PrintStream out) {
         throw new RuntimeException("DbeView.dump_profile not implemented");
     }

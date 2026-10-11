@@ -95,8 +95,6 @@ public class Hist_data {
         return hist_items.get(index);
     }
 
-    // Get-or-create by object identity, mirroring native's Hist_data::append_hist_item
-    // (Hist_data.cc:708-723).
     public HistItem append_hist_item(Histable obj) {
         HistItem hi = hi_map.get(obj);
         if (hi == null) {
@@ -112,20 +110,10 @@ public class Hist_data {
         return hi_map.get(obj);
     }
 
-    // Mirrors native's Hist_data::get_value (Hist_data.cc:962-1013), simplified: no
-    // DELTA/RATIO branches (compare-mode only, not supported here). The Name column
-    // (ONAME) isn't stored in HistItem.value at all -- it's computed on demand from
-    // the row's object, matching native (Hist_data.cc:1006-1009).
     DbeStructs.TValue get_value(int metricInd, int row) {
         return get_value_for_item(hist_items.get(row), metricInd);
     }
 
-    // Mirrors native's Hist_data::get_value(TValue*, int, HistItem*) overload, used by
-    // dbeGetFuncListMini to read a single column off the <Total> row without needing
-    // its row index (which shifts depending on sort direction). Returns an empty TValue
-    // rather than crashing if no <Total> row exists (e.g. a view whose MetricList has
-    // no CPU/heap-slot metrics at all -- PathTree.compute_metrics's "anyComputed" early
-    // return never creates one).
     public DbeStructs.TValue get_value_for_total(int metricInd) {
         HistItem hi = find_hist_item(DbeSession.getInstance().getTotalFunction());
         if (hi == null) {
@@ -147,43 +135,37 @@ public class Hist_data {
         return hi.value[metricInd];
     }
 
-    // Mirrors native's Hist_data::get_histmetrics (Hist_data.cc:1015-1048): for each
-    // visible column, measure the widest formatted value across every row, then fold
-    // that together with the wrapped header text via Metric::legend_width.
     Metric.HistMetric[] get_histmetrics() {
         int n = metrics.size();
         Metric.HistMetric[] hm = new Metric.HistMetric[n];
         for (int i = 0; i < n; i++)
             hm[i] = new Metric.HistMetric();
-        for (int i = 0; i < n; i++) {
-            Metric m = metrics.get(i);
-            // The Name column (VT_LABEL) is excluded from width measurement here --
-            // confirmed empirically against the oracle: its data rows can be 500+
-            // characters (long overloaded-method names), yet the printed header
-            // never widens to accommodate them, so native must skip label-typed
-            // values in this loop (matches the same "vtype == VT_LABEL -> skip"
-            // pattern used elsewhere in Print.cc's metric-width computations, e.g.
-            // dump_detail).
-            if (!m.is_value_visible() || m.get_vtype() == Enums.ValueTag.VT_LABEL)
-                continue;
-            Metric.HistMetric h = hm[i];
-            for (int row = 0; row < hist_items.size(); row++) {
-                int len = get_value(i, row).get_len();
-                if (h.maxvalue_width < len)
-                    h.maxvalue_width = len;
-            }
-        }
-        for (int i = 0; i < n; i++)
-            metrics.get(i).legend_width(hm[i], 2);
+        update_max(hm);
+        update_legend_width(hm);
         return hm;
     }
 
-    // Mirrors native's Hist_data::sort (Hist_data.cc:494-539), simplified: only the
-    // ALPHA (Name column)/VALUE comparisons (no AUX/MODL/DELTA/RATIO -- none apply to
-    // a plain function list), and the generic tie-break chain (name, then every other
-    // column, then object id) is dropped in favor of Java's stable sort leaving ties
-    // in insertion order. <Total> is still force-moved to the front (or back, if
-    // `reverse`) after sorting, exactly matching native's explicit name-prefix check.
+    void update_max(Metric.HistMetric[] hm) {
+        for (int i = 0; i < metrics.size(); i++) {
+            Metric m = metrics.get(i);
+            if (!m.is_value_visible() || m.get_vtype() == Enums.ValueTag.VT_LABEL)
+                continue;
+            int max = 0;
+            for (int row = 0; row < hist_items.size(); row++) {
+                int len = get_value(i, row).get_len();
+                if (max < len)
+                    max = len;
+            }
+            if (hm[i].maxvalue_width < max)
+                hm[i].maxvalue_width = max;
+        }
+    }
+
+    void update_legend_width(Metric.HistMetric[] hm) {
+        for (int i = 0; i < metrics.size(); i++)
+            metrics.get(i).legend_width(hm[i], 2);
+    }
+
     void sort(int ind, boolean reverse) {
         if (ind < 0 || ind >= metrics.size())
             return;
@@ -218,8 +200,6 @@ public class Hist_data {
         sort(mlist.get_sort_ref_index(), mlist.get_sort_rev());
     }
 
-    // Mirrors native's Hist_data::print_label (Hist_data.cc:827-867), simplified: the
-    // compare-mode "legend" first line (always empty outside -compare) is dropped.
     void print_label(PrintStream out, Metric.HistMetric[] hm, int space) {
         StringBuilder sb1 = new StringBuilder(), sb2 = new StringBuilder(), sb3 = new StringBuilder();
         String pad = " ".repeat(Math.max(space, 0));
@@ -246,7 +226,6 @@ public class Hist_data {
         out.println(sb3);
     }
 
-    // Mirrors native's Hist_data::print_content (Hist_data.cc:869-882).
     void print_content(PrintStream out, Metric.HistMetric[] hm, int limit) {
         int cnt = hist_items.size();
         if (limit > 0 && cnt > limit)
@@ -255,10 +234,7 @@ public class Hist_data {
             out.println(print_row(i, hm, " "));
     }
 
-    // Mirrors native's Hist_data::print_row + append_str (Hist_data.cc:884-960),
-    // simplified: no is_tvisible()/is_pvisible() branches (this port never marks a
-    // metric time- or percent-visible -- see Metric.legend_width's doc comment).
-    private String print_row(int row, Metric.HistMetric[] hm, String mark) {
+    String print_row(int row, Metric.HistMetric[] hm, String mark) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < metrics.size(); i++) {
             Metric m = metrics.get(i);

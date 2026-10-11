@@ -133,10 +133,6 @@ public class Print {
             load = show_load;
         }
 
-        // Mirrors native's er_print_histogram::data_dump (Print.cc:933-975),
-        // simplified: only Print_mode.MODE_LIST is implemented (MODE_DETAIL/
-        // MODE_GPROF/MODE_ANNOTATED need subsystems -- annotated source/disasm,
-        // caller-callee trees -- this port doesn't have).
         @Override
         public void data_dump() {
             if (hist_data.get_status() != Hist_data.Hist_status.SUCCESS)
@@ -148,8 +144,9 @@ public class Print {
                 limit = number_entries;
             switch (type) {
                 case MODE_LIST -> dump_list(limit);
+                case MODE_GPROF -> dump_gprof(limit);
                 default -> throw new RuntimeException(
-                        "er_print_histogram.data_dump: only Print_mode.MODE_LIST is implemented");
+                        "er_print_histogram.data_dump: Print_mode." + type + " is not implemented");
             }
         }
 
@@ -163,8 +160,6 @@ public class Print {
             };
         }
 
-        // Mirrors native's er_print_histogram::dump_list (Print.cc:331-385),
-        // restricted to PM_TEXT output (PM_HTML/PM_DELIM_SEP_LIST aren't ported).
         private void dump_list(int limit) {
             String title = sortedByMetricPrefix() + sort_metric;
             Metric.HistMetric[] hist_metric = hist_data.get_histmetrics();
@@ -172,6 +167,30 @@ public class Print {
             hist_data.print_label(out_file, hist_metric, 0);
             hist_data.print_content(out_file, hist_metric, limit);
             out_file.println();
+        }
+
+        private void dump_gprof(int limit) {
+            int n = mlist.get_items().size();
+            Metric.HistMetric[] hm = new Metric.HistMetric[n];
+            for (int i = 0; i < n; i++)
+                hm[i] = new Metric.HistMetric();
+            for (int i = 0; i < limit; i++) {
+                Histable obj = sel_obj != null ? sel_obj : hist_data.fetch(i).obj;
+                List<Histable> objs = List.of(obj);
+                Hist_data callers = dbev.get_hist_data(mlist, Histable.Type.FUNCTION, 0, Hist_data.Mode.CALLERS, objs);
+                Hist_data callees = dbev.get_hist_data(mlist, Histable.Type.FUNCTION, 0, Hist_data.Mode.CALLEES, objs);
+                Hist_data center = dbev.get_hist_data(mlist, Histable.Type.FUNCTION, 0, Hist_data.Mode.SELF, objs);
+                callers.update_max(hm);
+                callees.update_max(hm);
+                center.update_max(hm);
+                callers.update_legend_width(hm);
+                callers.print_label(out_file, hm, 0);
+                callers.print_content(out_file, hm, (int) callers.size());
+                if (center.size() > 0)
+                    out_file.println(center.print_row(0, hm, "*"));
+                callees.print_content(out_file, hm, (int) callees.size());
+                out_file.println();
+            }
         }
     }
 

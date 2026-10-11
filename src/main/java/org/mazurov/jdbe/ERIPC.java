@@ -65,32 +65,12 @@ public class ERIPC {
         return str == null ? "NULL" : str;
     }
 
-    // Signals a GUI-requested restart (native's reexec(), gp-display-text.cc:54-64,
-    // replaces the running process image via execv() to get a clean restart while
-    // keeping the same PID and the same stdin/stdout pipe the Analyzer GUI holds --
-    // IPCReader's restart handling never reacquires new stream objects, it assumes the
-    // same OS-level pipe stays connected). Re-exec'ing the whole JVM is an awkward fit
-    // for a Java port (and kills any attached debugger session), so instead this
-    // exception unwinds the stack out of ipc_mainLoop() back to ERPrint.main(), which
-    // rebuilds all session state from scratch (new ERPrint(args), re-entering
-    // ipc_mainLoop()) and keeps reading from the same System.in/System.out -- equivalent
-    // from the GUI's point of view, since it already replays the full initApplication/
-    // initView/setExperimentsGroups handshake after every restart regardless of whether
-    // the OS process actually changed underneath it.
     static class RestartRequestedException extends RuntimeException {
     }
 
     private static final String IPC_PROTOCOL_CURR = "IPC_PROTOCOL_38";
     private static String ipc_protocol = null; // null: no confirmation line is printed
 
-    // Mirrors native's check_env_args (ipc.cc:2552-2596): scans the "-E KEY=VALUE" pairs
-    // the Analyzer passes after "-IPC" (args[0] here, matching native's argv[1] since
-    // Java's args[] omits the program name that argv[0] carries) and, if it finds
-    // "SP_IPC_PROTOCOL=...", records the confirmation string to print. If the GUI never
-    // passes this (confirmed empirically: `gp-display-text -IPC` run bare prints no
-    // "ER_IPC:" line at all), ipc_protocol stays null and no confirmation is printed --
-    // see print_ipc_protocol_confirmation (ipc.cc:2598-2606), which is likewise gated on
-    // ipc_protocol being non-NULL.
     private static void check_env_args(String[] args) {
         int indx = 1; // skip "-IPC" (args[0])
         while (args.length - indx >= 2) {
@@ -178,11 +158,6 @@ public class ERIPC {
                     String res = currentRelativePath.toAbsolutePath().toString();
                     req.writeString (res);
                 }
-                // Mirrors native's chdir(arg1) (ipc.cc:502-509). The JVM has no real
-                // chdir(); this port's relative-path resolution (Paths.get("")/new
-                // File(relative)) goes through the "user.dir" system property, so
-                // updating that is the equivalent for everything this engine itself
-                // does with relative paths.
                 case "setCurrentDirectory" -> {
                     String arg1 = req.readString();
                     ipc_log("  arg = %s%n", arg1);
@@ -206,9 +181,6 @@ public class ERIPC {
                     req.writeString(Locale.getDefault().toString());
                 }
                 case "setExperimentsGroups" -> {
-                    // Wire-encoded as a heterogeneous array (L_OBJECT: one Vector<String>
-                    // per group), not a homogeneous 2D string array -- each element needs
-                    // its own cast.
                     Object[] rawGroups = (Object[]) req.readArray();
                     String[][] groups = new String[rawGroups.length][];
                     for (int i = 0; i < rawGroups.length; i++)
@@ -393,15 +365,15 @@ public class ERIPC {
                     int arg1 = req.readInt();
                     int arg2 = req.readInt();
                     int arg3 = req.readInt();
-                    ipc_log("  args = %d, %d, %d\n", arg1, arg2, arg3);
                     long res2 = dbeGetSelObj(arg1, arg2, arg3);
+                    ipc_log("  args = %d, %d, %d, res = %d\n", arg1, arg2, arg3, res2);
                     req.writeLong(res2);
                 }
                 case "getSelObjV2" -> {
                     int arg1 = req.readInt();
                     String arg2 = req.readString();
-                    ipc_log("  arg1 = %d  arg2 = %s\n", arg1, str2str(arg2));
                     long res2 = dbeGetSelObjV2(arg1, arg2);
+                    ipc_log("  arg1 = %d  arg2 = %s, res = %d\n", arg1, str2str(arg2), res2);
                     req.writeLong(res2);
                 }
                 case "getSelIndex" -> {
@@ -409,16 +381,23 @@ public class ERIPC {
                     long arg2 = req.readLong();
                     int arg3 = req.readInt();
                     int arg4 = req.readInt();
-                    ipc_log("  args = %d, %d, %d, %d\n", arg1, arg2, arg3, arg4);
                     int res = dbeGetSelIndex(arg1, arg2, arg3, arg4);
+                    ipc_log("  args = %d, %d, %d, %d, res = %d\n", arg1, arg2, arg3, arg4, res);
                     req.writeInt(res);
                 }
                 case "getObjNameV2" -> {
                     int arg1 = req.readInt();
                     long arg2 = req.readLong();
-                    ipc_log("  arg1 = %d, arg2 = %d\n", arg1, arg2);
                     String res = dbeGetObjNameV2(arg1, arg2);
+                    ipc_log("  arg1 = %d, arg2 = %d, res = %s\n", arg1, arg2, str2str(res));
                     req.writeString(res);
+                }
+                case "getObjNamesV2" -> {
+                    int arg1 = req.readInt();
+                    long[] arg2 = (long[]) req.readArray();
+                    ipc_log("  arg1 = %d, size = %d\n", arg1, arg2 == null ? -1 : arg2.length);
+                    String[] res = dbeGetObjNamesV2(arg1, arg2);
+                    req.writeArray(res);
                 }
                 case "setFuncDataV2" -> {
                     int dbevindex = req.readInt();

@@ -15,7 +15,21 @@ along with this program. If not, see <http://www.gnu.org/licenses>. */
 
 package org.mazurov.jdbe;
 
-public class IndexObject {
+public class IndexObject extends Histable {
+
+    boolean nameIsFinal;
+
+    public IndexObject(int indextype, long index) {
+        this.indextype = indextype;
+        this.id = index;
+    }
+
+    final int indextype;
+
+    @Override
+    public Type get_type() {
+        return Type.INDEXOBJ;
+    }
 
     // for use in index object definitions
     public static final int INDXOBJ_EXPGRID_SHIFT   = 60;

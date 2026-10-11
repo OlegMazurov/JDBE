@@ -15,6 +15,7 @@ along with this program. If not, see <http://www.gnu.org/licenses>. */
 
 package org.mazurov.jdbe;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,18 +23,8 @@ import java.util.Map;
 import static org.mazurov.jdbe.Enums.Prop_type;
 import static org.mazurov.jdbe.Enums.ProfData_type;
 
-// Calling-context tree used to aggregate per-sample metric values into per-Function
-// totals. Simplified relative to native's PathTree: built directly on resolved
-// Function nodes rather than instruction-level DbeInstr nodes (native's tree also
-// backs line/instruction-level caller-callee and flame-chart views we don't
-// implement), and uses plain per-node counters + HashMap children instead of
-// native's chunked-array Slot/Node memory management (an artifact of C++ manual
-// allocation, irrelevant with Java's GC).
 public class PathTree {
 
-    // One of these per metric "series" this port actually computes. Mirrors how
-    // native's Slot is keyed per-BaseMetric-id; simplified to a small fixed set since
-    // this port only computes CPU time and the 4 heap metrics so far.
     enum Slot { CPU, HEAP_ALLOC_BYTES, HEAP_ALLOC_CNT, HEAP_LEAK_BYTES, HEAP_LEAK_CNT }
 
     private static final int NSLOTS = Slot.values().length;
@@ -44,37 +35,27 @@ public class PathTree {
         Map<Function, FNode> children = new HashMap<>();
         long[] exclVals = new long[NSLOTS]; // self: samples whose stack ended exactly here
         long[] inclVals = new long[NSLOTS]; // subtree total: every sample passing through here
-        FNode funclistNext; // next tree node (anywhere) mapped to the same Function,
-                             // mirroring native's Node.funclist/fn_map thread
+        FNode funclistNext;
     }
 
     private final FNode root = new FNode();
     private final Map<Function, FNode> fnMap = new HashMap<>();
     private boolean built;
 
+    private final int indxtype;
+
     public PathTree(DbeView _dbev) {
         this(_dbev, -1);
     }
 
     public PathTree(DbeView _dbev, int _indxtype) {
-//        construct (_dbev, _indxtype, PATHTREE_MAIN);
+        indxtype = _indxtype;
     }
 
-    // Inserts one sample's resolved stack (leaf-first, root-last -- see
-    // Experiment.resolveStack) into the tree for a single metric slot, walking
-    // root-to-leaf (mirrors native's PathTree::find_path, which does the same
-    // root-to-leaf walk despite also iterating its leaf-first array backward) and
-    // incrementing every node's inclVals along the way (native's process_packets:
-    // "every node on the leaf->root path gets incremented, not just the leaf" -- so a
-    // node's value is a subtree total, not a per-visit count), then the final (leaf)
-    // node's exclVals.
     void insertSample(List<Function> stackLeafToRoot, Slot slot, long val) {
         insertSample(stackLeafToRoot, new Slot[] {slot}, new long[] {val});
     }
 
-    // Same as above, but updates several metric slots in one tree walk (used for
-    // heap records, where one record contributes to alloc-bytes/alloc-count/
-    // leak-bytes/leak-count simultaneously).
     void insertSample(List<Function> stackLeafToRoot, Slot[] slots, long[] vals) {
         FNode node = root;
         for (int i = stackLeafToRoot.size() - 1; i >= 0; i--) {
@@ -99,13 +80,12 @@ public class PathTree {
         return n;
     }
 
-    // Builds the tree from every DATA_CLOCK/DATA_HEAP record across every opened
-    // experiment. Native reads this lazily per-view; we build once, eagerly, on
-    // first use.
     private void ensureBuilt() {
         if (built)
             return;
         built = true;
+        root.func = DbeSession.getInstance().getTotalFunction();
+        fnMap.put(root.func, root);
         DbeSession session = DbeSession.getInstance();
         for (int i = 0; i < session.nexps(); i++) {
             Experiment exp = session.get_exp(i);
@@ -123,10 +103,6 @@ public class PathTree {
         int ntickOrd = Prop_type.PROP_NTICK.ordinal();
         int thridOrd = Prop_type.PROP_THRID.ordinal();
         long size = dDscr.getSize();
-        // nanoseconds per NTICK unit, matching Dbe.cc's own duration formula
-        // ("ptimer_usec * 1000LL" -- Dbe.cc:8990); converting here (rather than at
-        // display time) keeps the tree's units uniform even across multiple
-        // experiments with different clock-profiling intervals.
         long nsPerTick = exp.coll_params.ptimer_usec * 1000L;
         for (long i = 0; i < size; i++) {
             long ts = dDscr.getLongValue(tstampOrd, i);
@@ -138,14 +114,6 @@ public class PathTree {
         }
     }
 
-    // Mirrors native's HEAP_ALLOC_CNT/HEAP_ALLOC_BYTES/HEAP_LEAK_CNT/HEAP_LEAK_BYTES
-    // cond_spec/val_spec (BaseMetric.cc:608-638, already ported verbatim into
-    // BaseMetric.java's specify()): "(HTYPE!=FREE_TRACE)&&(HTYPE!=MUNMAP_TRACE)&&
-    // HVADDR" gates all 4 metrics (an allocation-shaped record with a real address);
-    // alloc bytes/count sum HSIZE/1, leak bytes/count sum HLEAKED/1 (HLEAKED is the
-    // derived property Experiment.compute_heap_leaked() already computed). Not using
-    // the generic expression evaluator for the same reason as CP_TOTAL_CPU: it's a
-    // direct hardcoded translation of that same already-ported spec instead.
     private void insertHeapRecords(Experiment exp) {
         DataDescriptor dDscr = exp.getDataDescriptor(ProfData_type.DATA_HEAP);
         if (dDscr == null)
@@ -179,14 +147,162 @@ public class PathTree {
         }
     }
 
-    // Per-Function {exclusive, inclusive} totals for one metric slot. Mirrors native's
-    // get_metrics(Vector<Function*>*, Histable*) (PathTree.cc:2044-2102): for each
-    // distinct Function, walk every tree node mapped to it (via the funclist thread)
-    // and sum exclVals unconditionally (a sample contributes its exclusive value to
-    // exactly one node, so there's no double-counting to worry about there), but sum
-    // inclVals only from the outermost occurrence of that Function along its own
-    // root-to-node ancestor chain (recursion dedup: if Function F calls itself, the
-    // deeper F-node's subtree is already included in the shallower F-node's total).
+    private boolean indxBuilt;
+    private final Map<Long, IndexObject> indxObjs = new HashMap<>();
+    private final Map<Long, long[]> indxVals = new HashMap<>();
+    private final long[] indxGrandTotal = new long[NSLOTS];
+    private IndexObject totalIndxObj;
+
+    private void ensureBuiltIndx() {
+        if (indxBuilt)
+            return;
+        indxBuilt = true;
+        totalIndxObj = new IndexObject(indxtype, -1);
+        totalIndxObj.set_name("<Total>");
+        totalIndxObj.nameIsFinal = true;
+        DbeSession session = DbeSession.getInstance();
+        for (int i = 0; i < session.nexps(); i++) {
+            Experiment exp = session.get_exp(i);
+            insertIndxClockRecords(exp);
+            insertIndxHeapRecords(exp);
+        }
+    }
+
+    private void insertIndxClockRecords(Experiment exp) {
+        DataDescriptor dDscr = exp.getDataDescriptor(ProfData_type.DATA_CLOCK);
+        if (dDscr == null)
+            return;
+        int tstampOrd = Prop_type.PROP_TSTAMP.ordinal();
+        int ntickOrd = Prop_type.PROP_NTICK.ordinal();
+        int thridOrd = Prop_type.PROP_THRID.ordinal();
+        int cpuidOrd = Prop_type.PROP_CPUID.ordinal();
+        long size = dDscr.getSize();
+        long nsPerTick = exp.coll_params.ptimer_usec * 1000L;
+        for (long i = 0; i < size; i++) {
+            long ts = dDscr.getLongValue(tstampOrd, i);
+            long ntick = dDscr.getLongValue(ntickOrd, i);
+            long thrid = dDscr.getLongValue(thridOrd, i);
+            long cpuid = dDscr.getLongValue(cpuidOrd, i);
+            addIndxSample(exp, thrid, cpuid, ts, Slot.CPU, ntick * nsPerTick);
+        }
+    }
+
+    private void insertIndxHeapRecords(Experiment exp) {
+        DataDescriptor dDscr = exp.getDataDescriptor(ProfData_type.DATA_HEAP);
+        if (dDscr == null)
+            return;
+        int tstampOrd = Prop_type.PROP_TSTAMP.ordinal();
+        int thridOrd = Prop_type.PROP_THRID.ordinal();
+        int cpuidOrd = Prop_type.PROP_CPUID.ordinal();
+        int htypeOrd = Prop_type.PROP_HTYPE.ordinal();
+        int hsizeOrd = Prop_type.PROP_HSIZE.ordinal();
+        int hvaddrOrd = Prop_type.PROP_HVADDR.ordinal();
+        int hleakedOrd = Prop_type.PROP_HLEAKED.ordinal();
+        long size = dDscr.getSize();
+        for (long i = 0; i < size; i++) {
+            int htype = dDscr.getIntValue(htypeOrd, i);
+            long hvaddr = dDscr.getLongValue(hvaddrOrd, i);
+            if (htype == Enums.Heap_type.FREE_TRACE.value || htype == Enums.Heap_type.MUNMAP_TRACE.value
+                    || hvaddr == 0)
+                continue;
+            long ts = dDscr.getLongValue(tstampOrd, i);
+            long thrid = dDscr.getLongValue(thridOrd, i);
+            long cpuid = dDscr.getLongValue(cpuidOrd, i);
+            long hsize = dDscr.getLongValue(hsizeOrd, i);
+            long hleaked = dDscr.getLongValue(hleakedOrd, i);
+            addIndxSample(exp, thrid, cpuid, ts,
+                    new Slot[] {Slot.HEAP_ALLOC_BYTES, Slot.HEAP_ALLOC_CNT, Slot.HEAP_LEAK_BYTES, Slot.HEAP_LEAK_CNT},
+                    new long[] {hsize, 1, hleaked, hleaked != 0 ? 1 : 0});
+        }
+    }
+
+    private void addIndxSample(Experiment exp, long thrid, long cpuid, long ts, Slot slot, long val) {
+        addIndxSample(exp, thrid, cpuid, ts, new Slot[] {slot}, new long[] {val});
+    }
+
+    private void addIndxSample(Experiment exp, long thrid, long cpuid, long ts, Slot[] slots, long[] vals) {
+        Long key = indxKey(exp, thrid, cpuid);
+        if (key == null)
+            return;
+        long[] totals = indxVals.computeIfAbsent(key, k -> new long[NSLOTS]);
+        IndexObject obj = indxObjs.computeIfAbsent(key, k -> new IndexObject(indxtype, k));
+        if (!obj.nameIsFinal) {
+            if (indxtype == IndexObject.IndexObjTypes_t.INDEX_THREADS.ordinal()) {
+                Experiment.ThreadName tn = exp.describeThread(thrid, ts);
+                obj.set_name(tn.name());
+                obj.nameIsFinal = tn.isFinal();
+            } else if (indxtype == IndexObject.IndexObjTypes_t.INDEX_CPUS.ordinal()) {
+                obj.set_name("CPU " + cpuid);
+                obj.nameIsFinal = true;
+            }
+        }
+        for (int k = 0; k < slots.length; k++) {
+            totals[slots[k].ordinal()] += vals[k];
+            indxGrandTotal[slots[k].ordinal()] += vals[k];
+        }
+    }
+
+    private Long indxKey(Experiment exp, long thrid, long cpuid) {
+        if (indxtype == IndexObject.IndexObjTypes_t.INDEX_THREADS.ordinal())
+            return ((long) exp.getUserExpId() << IndexObject.INDXOBJ_EXPID_SHIFT) | thrid;
+        if (indxtype == IndexObject.IndexObjTypes_t.INDEX_CPUS.ordinal())
+            return cpuid;
+        return null;
+    }
+
+    private Hist_data computeMetricsIndx(MetricList mlist, Hist_data.Mode mode, List<Histable> objs) {
+        ensureBuiltIndx();
+        List<Metric> items = mlist.get_items();
+        int[] exclCol = new int[NSLOTS];
+        int[] inclCol = new int[NSLOTS];
+        java.util.Arrays.fill(exclCol, -1);
+        java.util.Arrays.fill(inclCol, -1);
+        for (int i = 0; i < items.size(); i++) {
+            Metric m = items.get(i);
+            Slot slot = slotFor(m.get_type());
+            if (slot != null) {
+                if (m.get_subtype() == BaseMetric.EXCLUSIVE)
+                    exclCol[slot.ordinal()] = i;
+                else if (m.get_subtype() == BaseMetric.INCLUSIVE)
+                    inclCol[slot.ordinal()] = i;
+            } else if (m.get_type() != BaseMetric.Type.ONAME) {
+                m.set_raw_visbits(Enums.VAL_NA);
+            }
+        }
+
+        Hist_data hist_data = new Hist_data(items, Histable.Type.INDEXOBJ);
+
+        if (mode == Hist_data.Mode.SELF) {
+            if (objs == null || objs.isEmpty() || !(objs.get(0) instanceof IndexObject obj))
+                return hist_data;
+            Hist_data.HistItem hi = hist_data.append_hist_item(obj);
+            long[] vals = indxVals.get(obj.id);
+            for (Slot s : Slot.values()) {
+                long v = vals == null ? 0 : vals[s.ordinal()];
+                setMetricValue(hi, exclCol[s.ordinal()], s, v);
+                setMetricValue(hi, inclCol[s.ordinal()], s, v);
+            }
+            return hist_data;
+        }
+        if (mode != Hist_data.Mode.ALL)
+            throw new RuntimeException("PathTree.computeMetricsIndx: Mode." + mode + " is not implemented");
+
+        Hist_data.HistItem totalItem = hist_data.append_hist_item(totalIndxObj);
+        for (Slot s : Slot.values()) {
+            setMetricValue(totalItem, exclCol[s.ordinal()], s, indxGrandTotal[s.ordinal()]);
+            setMetricValue(totalItem, inclCol[s.ordinal()], s, indxGrandTotal[s.ordinal()]);
+        }
+        for (Map.Entry<Long, long[]> e : indxVals.entrySet()) {
+            Hist_data.HistItem hi = hist_data.append_hist_item(indxObjs.get(e.getKey()));
+            for (Slot s : Slot.values()) {
+                long v = e.getValue()[s.ordinal()];
+                setMetricValue(hi, exclCol[s.ordinal()], s, v);
+                setMetricValue(hi, inclCol[s.ordinal()], s, v);
+            }
+        }
+        return hist_data;
+    }
+
     Map<Function, long[]> computeTotals(Slot slot) {
         ensureBuilt();
         int s = slot.ordinal();
@@ -217,27 +333,11 @@ public class PathTree {
         return root.inclVals[slot.ordinal()];
     }
 
-    // Builds a Hist_data for a flat function list: one row per distinct Function that
-    // appeared in any sample, plus a <Total> aggregate row, with columns populated for
-    // whichever of CP_TOTAL_CPU/HEAP_ALLOC_BYTES/HEAP_ALLOC_CNT/HEAP_LEAK_BYTES/
-    // HEAP_LEAK_CNT appear in `mlist` (Excl+Incl each). Only Histable.Type.FUNCTION +
-    // Hist_data.Mode.ALL is implemented -- mirrors the one case ERPrint's plain
-    // "-functions" path actually needs (Hist_data::MODL/CALLERS/CALLEES/flame-chart
-    // views all need the instruction-level tree this class deliberately doesn't build).
-    //
-    // Deliberately NOT using the generic cond_spec/val_spec expression evaluation
-    // these metrics are defined with (BaseMetric.specify_prof_metric/specify_metric):
-    // CP_TOTAL_CPU's condition needs PROP_MSTATE, which this port's sample reader
-    // never populates (a legacy multi-microstate PROF_PCKT concept -- the modern
-    // single-state OPROF_PCKT format this port targets doesn't need it); the heap
-    // metrics' conditions are simple enough (see insertHeapRecords) that hardcoding
-    // them directly was simpler than building a generic expression evaluator. Both are
-    // verified correct by direct comparison against the oracle. Any other metric
-    // (e.g. I/O or sync-wait, not yet ingested) is hidden rather than shown as
-    // misleading zeros.
     Hist_data compute_metrics(MetricList mlist, Histable.Type type, Hist_data.Mode mode, List<Histable> objs) {
+        if (type == Histable.Type.INDEXOBJ)
+            return computeMetricsIndx(mlist, mode, objs);
         if (type != Histable.Type.FUNCTION)
-            throw new RuntimeException("PathTree.compute_metrics: only Histable.Type.FUNCTION is implemented");
+            throw new RuntimeException("PathTree.compute_metrics: only Histable.Type.FUNCTION/INDEXOBJ is implemented");
         if (mode == Hist_data.Mode.CALLERS || mode == Hist_data.Mode.CALLEES || mode == Hist_data.Mode.SELF)
             return compute_metrics_call(mlist, type, mode, objs);
         if (mode != Hist_data.Mode.ALL)
@@ -282,10 +382,13 @@ public class PathTree {
             return hist_data;
         }
 
+        Function totalFunc = DbeSession.getInstance().getTotalFunction();
         for (Slot s : Slot.values()) {
             if (exclCol[s.ordinal()] < 0 && inclCol[s.ordinal()] < 0)
                 continue;
             for (Map.Entry<Function, long[]> e : computeTotals(s).entrySet()) {
+                if (e.getKey() == totalFunc)
+                    continue;
                 Hist_data.HistItem hi = hist_data.append_hist_item(e.getKey());
                 setMetricValue(hi, exclCol[s.ordinal()], s, e.getValue()[0]);
                 setMetricValue(hi, inclCol[s.ordinal()], s, e.getValue()[1]);
@@ -294,16 +397,6 @@ public class PathTree {
         return hist_data;
     }
 
-    // Mirrors native's PathTree::get_clr_metrics/get_cle_metrics/get_self_metrics
-    // (PathTree.cc), simplified onto this port's Function-level tree (no
-    // instruction-level Node graph to walk): CALLERS/CALLEES attribute a Function
-    // occurrence's aggregate subtree time to its direct parent/children, deduplicating
-    // recursion the same way computeTotals() already does for the flat list (only an
-    // occurrence with no same-Function ancestor is "outermost" and contributes). This
-    // preserves the invariant that the CALLERS values sum to the same total as the
-    // CALLEES values and to the function's own inclusive total in the flat list --
-    // unlike native's node-by-node ATTRIBUTED bookkeeping, which this doesn't replicate
-    // bit-for-bit, but which this port's instruction-free tree has no equivalent of.
     private Hist_data compute_metrics_call(MetricList mlist, Histable.Type type, Hist_data.Mode mode,
                                             List<Histable> objs) {
         List<Metric> items = mlist.get_items();
@@ -329,60 +422,174 @@ public class PathTree {
         }
 
         Hist_data hist_data = new Hist_data(items, type);
-        if (objs == null || objs.isEmpty() || !(objs.get(0) instanceof Function))
+        if (objs == null || objs.isEmpty())
             return hist_data;
-        Function target = (Function) objs.get(0);
+        List<Function> targetPath = new ArrayList<>(objs.size());
+        for (Histable h : objs) {
+            if (!(h instanceof Function))
+                return hist_data;
+            targetPath.add((Function) h);
+        }
         ensureBuilt();
 
-        // SELF is shared by two callers with different mlist conventions: the
-        // Caller-Callees view's "function item" row (MET_CALL, ATTRIBUTED columns --
-        // self value is the inclusive total) and the Summary panel (MET_NORMAL/ref
-        // metrics, EXCLUSIVE+INCLUSIVE column pairs -- same computeTotals() result,
-        // just spread across two columns instead of one).
         if (mode == Hist_data.Mode.SELF) {
-            Hist_data.HistItem hi = hist_data.append_hist_item(target);
-            for (Slot s : Slot.values()) {
-                if (attrCol[s.ordinal()] < 0 && exclCol[s.ordinal()] < 0 && inclCol[s.ordinal()] < 0)
-                    continue;
-                long[] totals = computeTotals(s).get(target);
-                long excl = totals == null ? 0 : totals[0];
-                long incl = totals == null ? 0 : totals[1];
-                setMetricValue(hi, attrCol[s.ordinal()], s, incl);
-                setMetricValue(hi, exclCol[s.ordinal()], s, excl);
-                setMetricValue(hi, inclCol[s.ordinal()], s, incl);
+            if (targetPath.size() == 1) {
+                Function target = targetPath.get(0);
+                Hist_data.HistItem hi = hist_data.append_hist_item(target);
+                boolean rootSelf = target == root.func;
+                for (Slot s : Slot.values()) {
+                    if (attrCol[s.ordinal()] < 0 && exclCol[s.ordinal()] < 0 && inclCol[s.ordinal()] < 0)
+                        continue;
+                    long[] totals = computeTotals(s).get(target);
+                    long excl = totals == null ? 0 : totals[0];
+                    long incl = totals == null ? 0 : totals[1];
+                    long selfVal = rootSelf ? incl : excl;
+                    setMetricValue(hi, attrCol[s.ordinal()], s, selfVal);
+                    setMetricValue(hi, exclCol[s.ordinal()], s, selfVal);
+                    setMetricValue(hi, inclCol[s.ordinal()], s, incl);
+                }
+            } else {
+                Map<Function, long[]> selfAcc = new HashMap<>();
+                getSelfMetricsPath(selfAcc, attrCol, exclCol, inclCol, targetPath, root, false, 0,
+                        new ArrayList<>());
+                for (Map.Entry<Function, long[]> e : selfAcc.entrySet()) {
+                    Hist_data.HistItem hi = hist_data.append_hist_item(e.getKey());
+                    long[] v = e.getValue();
+                    for (Slot s : Slot.values()) {
+                        setMetricValue(hi, attrCol[s.ordinal()], s, v[s.ordinal()]);
+                        setMetricValue(hi, exclCol[s.ordinal()], s, v[s.ordinal()]);
+                        setMetricValue(hi, inclCol[s.ordinal()], s, v[NSLOTS + s.ordinal()]);
+                    }
+                }
             }
             return hist_data;
         }
 
-        for (Slot s : Slot.values()) {
-            if (attrCol[s.ordinal()] < 0)
-                continue;
-            Map<Function, Long> byEdge = new HashMap<>();
-            for (FNode node = fnMap.get(target); node != null; node = node.funclistNext) {
-                if (!isOutermost(node, target))
-                    continue;
-                if (mode == Hist_data.Mode.CALLERS) {
-                    if (node.parent == null || node.parent.func == null)
-                        continue; // the tree root has no caller
-                    byEdge.merge(node.parent.func, node.inclVals[s.ordinal()], Long::sum);
-                } else { // CALLEES
-                    for (FNode child : node.children.values())
-                        byEdge.merge(child.func, child.inclVals[s.ordinal()], Long::sum);
-                }
-            }
-            for (Map.Entry<Function, Long> e : byEdge.entrySet()) {
-                Hist_data.HistItem hi = hist_data.append_hist_item(e.getKey());
-                setMetricValue(hi, attrCol[s.ordinal()], s, e.getValue());
-            }
+        Map<Function, long[]> acc = new HashMap<>();
+        List<FNode> path = new ArrayList<>();
+        if (mode == Hist_data.Mode.CALLERS)
+            getClrMetrics(acc, attrCol, targetPath, root, -1, 0, path);
+        else // CALLEES
+            getCleMetrics(acc, attrCol, targetPath, root, -1, -1, 0, path);
+        for (Map.Entry<Function, long[]> e : acc.entrySet()) {
+            Hist_data.HistItem hi = hist_data.append_hist_item(e.getKey());
+            for (Slot s : Slot.values())
+                setMetricValue(hi, attrCol[s.ordinal()], s, e.getValue()[s.ordinal()]);
         }
         return hist_data;
     }
 
-    private static boolean isOutermost(FNode node, Function f) {
-        for (FNode anc = node.parent; anc != null; anc = anc.parent)
-            if (anc.func == f)
-                return false;
-        return true;
+    private static void addTo(Map<Function, long[]> acc, Function f, int slotOrd, long delta) {
+        acc.computeIfAbsent(f, k -> new long[NSLOTS])[slotOrd] += delta;
+    }
+
+    private void getClrMetrics(Map<Function, long[]> acc, int[] attrCol, List<Function> objs, FNode node,
+                                int pmatchDepth, int depth, List<FNode> path) {
+        path.add(node);
+        int nobj = objs.size();
+        boolean match = depth + 1 >= nobj;
+        if (match) {
+            for (int i = 0; i < nobj; i++) {
+                if (path.get(depth - nobj + 1 + i).func != objs.get(i)) {
+                    match = false;
+                    break;
+                }
+            }
+        }
+
+        if (match && depth >= nobj) {
+            Function callerFunc = path.get(depth - nobj).func;
+            Function outerCallerFunc = (pmatchDepth >= 0 && pmatchDepth >= nobj)
+                    ? path.get(pmatchDepth - nobj).func : null;
+            for (Slot s : Slot.values()) {
+                if (attrCol[s.ordinal()] < 0)
+                    continue;
+                long val = node.inclVals[s.ordinal()];
+                addTo(acc, callerFunc, s.ordinal(), val);
+                if (outerCallerFunc != null)
+                    addTo(acc, outerCallerFunc, s.ordinal(), -val);
+            }
+        }
+
+        for (FNode child : node.children.values())
+            getClrMetrics(acc, attrCol, objs, child, match ? depth : pmatchDepth, depth + 1, path);
+        path.remove(path.size() - 1);
+    }
+
+    private void getCleMetrics(Map<Function, long[]> acc, int[] attrCol, List<Function> objs, FNode node,
+                                int pcleDepth, int pmatchDepth, int depth, List<FNode> path) {
+        path.add(node);
+        int nobj = objs.size();
+        boolean match = depth + 1 >= nobj;
+        if (match) {
+            for (int i = 0; i < nobj; i++) {
+                if (path.get(depth - nobj + 1 + i).func != objs.get(i)) {
+                    match = false;
+                    break;
+                }
+            }
+        }
+
+        boolean isDirectCallee = pmatchDepth >= 0 && depth == pmatchDepth + 1;
+        Function outerCalleeFunc = pcleDepth >= 0 ? path.get(pcleDepth).func : null;
+        for (Slot s : Slot.values()) {
+            if (attrCol[s.ordinal()] < 0)
+                continue;
+            if (match) {
+                long leafVal = node.exclVals[s.ordinal()];
+                long callSiteVal = node.inclVals[s.ordinal()] - leafVal;
+                if (isDirectCallee)
+                    addTo(acc, node.func, s.ordinal(), callSiteVal);
+                if (outerCalleeFunc != null) {
+                    if (isDirectCallee)
+                        addTo(acc, outerCalleeFunc, s.ordinal(), -callSiteVal);
+                    addTo(acc, outerCalleeFunc, s.ordinal(), -leafVal);
+                }
+            } else if (isDirectCallee) {
+                long val = node.inclVals[s.ordinal()];
+                addTo(acc, node.func, s.ordinal(), val);
+                if (outerCalleeFunc != null)
+                    addTo(acc, outerCalleeFunc, s.ordinal(), -val);
+            }
+        }
+
+        int childPcle = isDirectCallee ? depth : pcleDepth;
+        int childPmatch = match ? depth : pmatchDepth;
+        for (FNode child : node.children.values())
+            getCleMetrics(acc, attrCol, objs, child, childPcle, childPmatch, depth + 1, path);
+        path.remove(path.size() - 1);
+    }
+
+    private void getSelfMetricsPath(Map<Function, long[]> acc, int[] attrCol, int[] exclCol, int[] inclCol,
+                                     List<Function> objs, FNode node, boolean seen, int depth,
+                                     List<FNode> path) {
+        path.add(node);
+        int nobj = objs.size();
+        boolean match = depth + 1 >= nobj;
+        if (match) {
+            for (int i = 0; i < nobj; i++) {
+                if (path.get(depth - nobj + 1 + i).func != objs.get(i)) {
+                    match = false;
+                    break;
+                }
+            }
+        }
+
+        if (match) {
+            boolean inclOk = !seen;
+            long[] vals = acc.computeIfAbsent(node.func, k -> new long[2 * NSLOTS]);
+            for (Slot s : Slot.values()) {
+                if (attrCol[s.ordinal()] < 0 && exclCol[s.ordinal()] < 0 && inclCol[s.ordinal()] < 0)
+                    continue;
+                vals[s.ordinal()] += (node == root) ? node.inclVals[s.ordinal()] : node.exclVals[s.ordinal()];
+                if (inclOk)
+                    vals[NSLOTS + s.ordinal()] += node.inclVals[s.ordinal()];
+            }
+        }
+
+        for (FNode child : node.children.values())
+            getSelfMetricsPath(acc, attrCol, exclCol, inclCol, objs, child, seen || match, depth + 1, path);
+        path.remove(path.size() - 1);
     }
 
     private static Slot slotFor(BaseMetric.Type type) {
