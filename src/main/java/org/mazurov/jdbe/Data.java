@@ -121,7 +121,7 @@ public abstract class Data {
 
         @Override
         public long fetchULong(long i) {
-            return data.fetch(i) & 0xFFFFFFFFL; // zero-extend, matching (unsigned long long)(uint32_t) in native
+            return data.fetch(i) & 0xFFFFFFFFL; 
         }
 
         @Override

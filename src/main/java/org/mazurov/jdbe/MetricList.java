@@ -146,25 +146,11 @@ public class MetricList {
                 }
             }
         }
-        // Set default visibility. Native computes this via a full setMetrics()/
-        // DEFAULT_METRICS command-string parser (consulting each BaseMetric's
-        // per-subtype default_visbits), which isn't ported -- this is a simplification
-        // matching its actual default *result* for every metric type this port
-        // currently computes: EXCLUSIVE/INCLUSIVE metrics show their plain value (no
-        // percent column); STATIC metrics are hidden except ONAME (the Name column,
-        // always shown).
         for (Metric m : items) {
             if (m.get_subtype() == BaseMetric.STATIC && m.get_type() != BaseMetric.Type.ONAME)
                 m.set_raw_visbits(VAL_NA);
             else if ((mtype == MetricType.MET_CALL || mtype == MetricType.MET_CALL_AGR)
                     && (m.get_subtype() == BaseMetric.EXCLUSIVE || m.get_subtype() == BaseMetric.INCLUSIVE))
-                // Native shows only the ATTRIBUTED column by default for Caller-Callees/
-                // Call Tree metric lists -- the EXCLUSIVE/INCLUSIVE entries added above
-                // alongside it exist only so the GUI can toggle them on, default-hidden
-                // (confirmed against the oracle's -callers-callees output, which shows
-                // only "Attr." columns -- and PathTree.compute_metrics_call's CALLERS/
-                // CALLEES aggregation never populates these columns in the first place,
-                // since it only attributes the ATTRIBUTED subtype).
                 m.set_raw_visbits(VAL_NA);
             else {
                 m.enable_all_visbits();
@@ -334,13 +320,6 @@ public class MetricList {
                 continue;
             }
 
-            //  Add a new Metric with probably a new sub_type to this->items:
-            //    for MET_CALL and MET_CALL_AGR the matching entry to an e. or i. is itself
-            //    for MET_DATA, the matching entry to an e. or i. is the d. metric
-            //    for MET_INDX, the matching entry to an e. or i. is the e. metric
-            //    for MET_IO, the matching entry to an e. or i. is the e. metric
-            //    for MET_HEAP, the matching entry to an e. or i. is the e. metric
-            //    Save static entries (SIZES and ADDRESS) only for MET_NORMAL, MET_CALL, MET_CALL_AGR, MET_SRCDIS
             switch (mtr.get_type()) {
                 case SIZES:
                 case ADDRESS:

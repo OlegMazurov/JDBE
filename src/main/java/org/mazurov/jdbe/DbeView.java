@@ -171,19 +171,14 @@ public class DbeView {
     }
 
     public Command.Cmd_status proc_compcom(String cmd, boolean isSrc, boolean rc) {
-        // the compiler-commentary visibility parser (comp_cmd/comp_vis lookup tables
-        // and their CCMV_*/COMP_* flag constants) is not yet ported.
         throw new RuntimeException("DbeView.proc_compcom not implemented");
     }
 
     public Command.Cmd_status proc_thresh(String cmd, boolean isSrc, boolean rc) {
-        // threshold-spec parsing is not yet ported.
         throw new RuntimeException("DbeView.proc_thresh not implemented");
     }
 
     public boolean comparingExperiments() {
-        // TODO: experiment groups (multi-experiment comparison) are not yet ported;
-        // for now only single-experiment sessions are supported, so this is always false.
         return false;
     }
 
@@ -196,8 +191,6 @@ public class DbeView {
             return;
         settings.set_compare_mode(mode);
         if (comparingExperiments()) {
-            // TODO: add_compare_metrics() (duplicating metrics for delta/ratio compare
-            // columns) is not yet ported; unreachable until experiment groups exist.
         }
     }
 
@@ -218,8 +211,6 @@ public class DbeView {
     }
 
     public String set_filter(String filter_spec) {
-        // real filter-expression parsing/application (FilterExp/QLParser) is not yet
-        // ported.
         throw new RuntimeException("DbeView.set_filter not implemented");
     }
 
@@ -295,9 +286,6 @@ public class DbeView {
         return !filters.isEmpty() ? filters.get(n).get_enabled() : true;
     }
 
-    // TODO: does not yet track dataViews (per-experiment, per-data-type cached views)
-    // or add_experiment_epilogue()'s lo_expand sync; neither is needed for header
-    // display.
     public void add_experiment(int index, boolean enabled) {
         reset_data(true);
         Experiment exp = DbeSession.getInstance().get_exp(index);
@@ -338,7 +326,6 @@ public class DbeView {
                 metrics_lists.put(MetricType.MET_COMMON, new MetricList(mlist));
                 remove_compare_metrics(metrics_lists.get(MetricType.MET_COMMON));
                 break;
-            // ignoring the following cases (why?)
             case MET_SRCDIS:
             case MET_CALL:
             case MET_DATA:
@@ -557,13 +544,10 @@ public class DbeView {
     }
 
     public String setMetrics(String mspec, boolean fromRcFile) {
-        // MetricList.set_metrics(String,...) (parsing a metric-spec string like
-        // "i.user:e.user:name") is not yet ported.
         throw new RuntimeException("DbeView.setMetrics not implemented");
     }
 
     public String setSort(String sort_list, MetricType mtype, boolean fromRcFile) {
-        // depends on MetricList.set_sort(String,...) (see stub there) and resortData().
         throw new RuntimeException("DbeView.setSort not implemented");
     }
 
@@ -680,8 +664,6 @@ public class DbeView {
     // returns true if any change
     public boolean set_libexpand(String liblist, LibExpand flag) {
         boolean changed = settings.set_libexpand(liblist, flag, false);
-        // Show/hide performance optimization: it is the caller's responsibility to
-        // call update_lo_expands() once, after any set_libexpand() calls are done.
         return changed;
     }
 
@@ -722,8 +704,6 @@ public class DbeView {
 //        filter_active = false;
     }
 
-    // Main call-tree (as opposed to `indxspaces`, one per index-object space), lazily
-    // created -- matches native's ptree/PATHTREE_MAIN (DbeView.h/.cc).
     private PathTree mainPathTree;
 
     Hist_data func_data;
@@ -746,9 +726,6 @@ public class DbeView {
         if (mainPathTree == null)
             mainPathTree = new PathTree(this);
         Hist_data hist_data = mainPathTree.compute_metrics(mlist, type, mode, hobjs);
-        // Matches native's DbeView::resortData(), normally called before any
-        // dump_list/print call; done here instead since this port has no separate
-        // resort-trigger step.
         hist_data.resort(mlist);
         return hist_data;
     }

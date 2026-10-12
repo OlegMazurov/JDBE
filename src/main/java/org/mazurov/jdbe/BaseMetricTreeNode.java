@@ -27,7 +27,6 @@ public class BaseMetricTreeNode {
     static final String UNIT_BYTES = "BYTES";
     static final String UNIT_BYTES_UNAME = "bytes";
 
-    // Name values for intermediate parent nodes that aren't defined elsewhere
     static final String L1_DURATION = "PROFDATA_TYPE_DURATION";
     static final String L1_DURATION_UNAME = "Experiment Duration";
     static final String L1_GCDURATION = "PROFDATA_TYPE_GCDURATION";

@@ -57,14 +57,6 @@ public class ERPrint extends DbeApplication {
             new ERPrint(args).start(args);
             return;
         }
-        // Mirrors native's reexec()-driven restart (gp-display-text.cc:54-64), but in
-        // place of actually replacing the OS process image, ERIPC.reExec() throws
-        // RestartRequestedException: it unwinds the stack all the way back out of
-        // ipc_mainLoop() to here, where we rebuild the world exactly as a fresh process
-        // would (new ERPrint -- which re-self-assigns both the DbeApplication and
-        // DbeSession singletons, see their constructors) and re-enter ipc_mainLoop().
-        // This keeps the same OS process/PID (and, critically, the same debugger
-        // session) across a "restart", unlike the execv()-based approach it replaces.
         for (;;) {
             ERPrint erPrint = new ERPrint(args);
             erPrint.rdtMode = false;
@@ -426,14 +418,8 @@ public class ERPrint extends DbeApplication {
         }
     }
 
-    // one quoted or unquoted token starting at str.charAt(pos) (leading blanks/tabs are
-    // skipped); endIndex is where the next token search should resume from
     private record QString(String value, int endIndex) {}
 
-    // get quoted string; mirrors util.cc's parse_qstring(), except that a `\<digit>`
-    // numeric escape (e.g. octal/hex char codes) is not supported and is passed through
-    // as a literal character instead -- not worth the extra complexity for something
-    // essentially never used in gprofng scripts
     private static QString parse_qstring(String str, int pos) {
         int len = str.length();
         while (pos < len && (str.charAt(pos) == ' ' || str.charAt(pos) == '\t'))
@@ -546,10 +532,6 @@ public class ERPrint extends DbeApplication {
                 switch (cmd_type) {
                     case SOURCE:
                     case DISASM:
-                        // ignore any third parameter; if there was, we have written a
-                        // warning. xdefault (whether input is interactive) is not
-                        // threaded through -- find_obj, its only consumer, is still a
-                        // stub
                         proc_cmd(cmd_type, cparam, arglist[0], arglist[1], null, null);
                         break;
                     case QUIT:
@@ -575,7 +557,6 @@ public class ERPrint extends DbeApplication {
                 }
             }
         } catch (IOException e) {
-            // treat as end of input
         }
     }
 
@@ -707,7 +688,7 @@ public class ERPrint extends DbeApplication {
                 break;
             }
             case METRIC_LIST:
-                proc_cmd(CmdType.METRICS, cparam, null, null);  // TODO: METRICS?
+                proc_cmd(CmdType.METRICS, cparam, null, null);  
                 dbev.get_metric_ref(MetricType.MET_NORMAL).print_metric_list(dis_file,
                     "Available metrics:\n", false);
                 break;
@@ -716,7 +697,7 @@ public class ERPrint extends DbeApplication {
                     String ret = dbev.setMetrics(arg1, false);
                     if (ret != null) {
                         System.err.printf("Error: %s\n", ret);
-                        proc_cmd(CmdType.METRIC_LIST, cparam, null, null); // TODO: METRIC_LIST?
+                        proc_cmd(CmdType.METRIC_LIST, cparam, null, null); 
                         break;
                     }
                 }
@@ -1451,8 +1432,6 @@ public class ERPrint extends DbeApplication {
         }
     }
 
-    // prev is the loadobject segment index that was last returned; the search starts
-    // following that loadobject. Returns the matching seg_idx, or -1.
     int is_valid_seg_name(String lo_name, int prev) {
         String p_lo_name = lo_name;
         // strip angle brackets from all but <Unknown> and <Total>
@@ -1486,9 +1465,6 @@ public class ERPrint extends DbeApplication {
         return lo_name.equals(cmp_name);
     }
 
-    // Note that this does not affect the strings in Settings, unlike object_show,
-    // object_hide, and object_api. Returns -1 on error, otherwise the number of
-    // load objects made visible.
     int process_object_select(String names) {
         int no_lobj = 0;
         boolean got_err = false;
@@ -1537,8 +1513,6 @@ public class ERPrint extends DbeApplication {
 
     void set_libexpand(String cov, LibExpand expand) {
         boolean changed = dbev.set_libexpand(cov, expand);
-        // update_lo_expands() is only skipped by callers that set_libexpand() many
-        // times in a loop and call it once at the end; we call it directly every time.
         if (changed)
             dbev.update_lo_expands();
     }
@@ -1548,16 +1522,9 @@ public class ERPrint extends DbeApplication {
     }
 
     void ifreq() {
-        // instruction-frequency report; depends on DbeView.ifreq(PrintStream), not yet
-        // ported.
         throw new RuntimeException("ERPrint.ifreq not implemented");
     }
 
-    // The following dump_* methods print raw debug/internal data for the corresponding
-    // "d..." commands (dnodes, dstacks, dunkpc, dfuncs, ddobjs, dmap, dentities);
-    // dump_stats/dump_proc_warnings print PathTree processing statistics/warnings.
-    // None of this is on the -functions critical path; depends on PathTree (still a
-    // stub) and other unported machinery, so these are left as stubs for now.
     void dump_nodes() {
         throw new RuntimeException("ERPrint.dump_nodes not implemented");
     }
@@ -1755,24 +1722,14 @@ public class ERPrint extends DbeApplication {
     }
 
     void print_segments() {
-        // matches native gp-display-text.cc: print_segments() is itself unimplemented
-        // upstream (it computes the load-object list but never uses it, always
-        // printing this literal message)
         dis_file.print("Not implemented yet!\n");
     }
 
     void print_overview() {
-        // depends on dbeGetOverviewText()/dbeGetRefMetricTreeValues() (missing),
-        // print_overview_nodes()/print_overview_tree() tree-rendering helpers (not
-        // ported), and several Experiment fields (hostname, architecture, os_version,
-        // start_sec) that don't exist yet either; a subsystem of its own, not yet
-        // ported.
         throw new RuntimeException("ERPrint.print_overview not implemented");
     }
 
     void print_ctree(Command.CmdType cmd_type) {
-        // depends on the calltree/path-tree rendering machinery (PathTree, still a
-        // stub); not yet ported.
         throw new RuntimeException("ERPrint.print_ctree not implemented");
     }
 
@@ -1884,22 +1841,16 @@ public class ERPrint extends DbeApplication {
     }
 
     void mo_list(boolean showtab, PrintStream outf) {
-        // depends on MemorySpace.getMemObjects(); the MemorySpace subsystem (memory
-        // object type definitions) is not yet ported.
         throw new RuntimeException("ERPrint.mo_list not implemented");
     }
 
     void print_anno_file(String name, String sel, String srcFile, boolean isDisasm,
                           PrintStream dis_file, InputStream inp_file, PrintStream out_file,
                           DbeView dbev, boolean xdefault) {
-        // annotated source/disassembly rendering; depends on the Function/Module/
-        // SourceFile source hierarchy, none of which exist yet.
         throw new RuntimeException("ERPrint.print_anno_file not implemented");
     }
 
     void describe() {
-        // depends on dbeGetFilterKeywords() (filter/query-language keyword metadata);
-        // not yet ported.
         throw new RuntimeException("ERPrint.describe not implemented");
     }
 }

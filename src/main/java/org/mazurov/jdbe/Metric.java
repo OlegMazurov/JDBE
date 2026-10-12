@@ -81,8 +81,6 @@ public class Metric extends BaseMetric {
                 && (visbits & (VAL_VALUE | VAL_TIMEVAL | VAL_PERCENT)) != 0;
     }
 
-    // Mirrors native's Metric::is_value_visible/is_time_visible/is_visible/
-    // is_tvisible/is_pvisible (Metric.h:121-157).
     public boolean is_value_visible() {
         return (visbits & VAL_VALUE) != 0 || (!is_time_val() && (visbits & VAL_TIMEVAL) != 0);
     }
@@ -1265,10 +1263,6 @@ public class Metric extends BaseMetric {
         }
     } // set_subtype
 
-    // Per-column layout info computed by legend_width() and consumed by
-    // Hist_data.get_histmetrics/print_label/print_content. Mirrors native's
-    // Metric::HistMetric (Metric.h:39-51); indFirstExp/indTimeVal (compare-mode and
-    // HWC-time-column bookkeeping) are omitted since neither applies to this port.
     static class HistMetric {
         int width;
         int maxvalue_width;
@@ -1278,13 +1272,6 @@ public class Metric extends BaseMetric {
         String legend3 = "";
     }
 
-    // Computes this column's total print width and wraps its header text (get_abbr(),
-    // plus a unit suffix like "sec.") into up to 3 lines. Mirrors native's
-    // Metric::legend_width (Metric.cc:1298-1472), simplified: this port never marks a
-    // metric time-visible (is_tvisible(), the HWC dual value/time-column feature) or
-    // percent-visible (is_pvisible() -- MetricList forces percent off for every
-    // metric), so those branches (and the associated "force unit onto the last line"
-    // refinement, and the legend/compare-mode first line) are dropped entirely.
     void legend_width(HistMetric hitem, int gap) {
         hitem.width = hitem.maxvalue_width;
         int max_len = hitem.width;
@@ -1354,8 +1341,6 @@ public class Metric extends BaseMetric {
         hitem.legend3 = legends[2];
     }
 
-    // Mirrors native's is_width_ok (Metric.cc:1279-1296): can `tok`s be greedily
-    // word-wrapped into at most `lines` lines of at most `width` columns each?
     private static boolean is_width_ok(int lines, int width, List<Integer> tlen) {
         int len = 0;
         for (int tl : tlen) {

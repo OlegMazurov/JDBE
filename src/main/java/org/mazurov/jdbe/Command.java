@@ -372,11 +372,6 @@ public class Command {
         new Cmdtable(CmdType.DSORT, "dsort", null, "metric_spec", 1, ""),
         new Cmdtable(CmdType.EN_DESC, "en_desc", null, "{on|off|=<regex>)", 1, ""),
 
-        // Mirrors native's "andeflthdr" table section (Command.cc:180-187), minus
-        // TLMODE/TLDATA (not used as any DispTab cmdtoken in Settings.java, so not
-        // reachable via dbeGetTabListInfo's Command.get_cmd_str lookup). Without these,
-        // get_cmd_str fell through to its "xxxx" not-found placeholder for every tab
-        // whose cmdtoken is one of these four.
         new Cmdtable(CmdType.TABS, "tabs", null, "tablist", 1, ""),
         new Cmdtable(CmdType.CALLFLAME, "callflame", null, null, 0, ""),
         new Cmdtable(CmdType.TIMELINE, "timeline", null, null, 0, ""),

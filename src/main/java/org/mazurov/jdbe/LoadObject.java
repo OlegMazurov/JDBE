@@ -35,12 +35,8 @@ public class LoadObject extends Histable {
     long size;                     // size of loadobject in bytes
     public List<Module> seg_modules = new ArrayList<>();  // list of modules
     public List<Function> functions = new ArrayList<>();  // ordered list of functions
-    public Module noname;          // Module pointer to unknown name (lazily created)
+    public Module noname;          
 
-    // Simplification: native "plugs the hole" for addresses not covered by any known
-    // Function within this LoadObject by synthesizing a static-range function (needs
-    // ELF/stabs, out of scope). We instead attribute the whole unmapped remainder of
-    // the LoadObject to a single lazily-created placeholder Function.
     public Function placeholderFunc;
 
     public LoadObject(String loname) {
@@ -52,8 +48,6 @@ public class LoadObject extends Histable {
         if (nm.startsWith("./"))
             nm = nm.substring(2);
         pathname = nm;
-        // matches native LoadObject::set_name: display name is "<basename>", unless
-        // the basename is already bracketed (e.g. synthetic names like "<Total>")
         String base = new java.io.File(pathname).getName();
         name = base.startsWith("<") ? base : "<" + base + ">";
     }
@@ -73,8 +67,6 @@ public class LoadObject extends Histable {
     }
 
     public Emsg fetch_warnings() {
-        // TODO: no warnings queue exists on LoadObject yet, so there is nothing to
-        // fetch; matches current behavior (no code populates load-object warnings yet).
         return null;
     }
 }

@@ -17,14 +17,10 @@ package org.mazurov.jdbe;
 
 public class Util {
 
-    // like C's strtoull(str, NULL, 0): parses str as unsigned, auto-detecting the base
-    // from a "0x"/"0X" prefix (hex) or a leading "0" (octal), decimal otherwise
     public static long strtoull(String str) {
         return parseCLong(str, true);
     }
 
-    // like C's strtoll(str, NULL, 0): parses str as signed, with the same base
-    // auto-detection
     public static long strtoll(String str) {
         return parseCLong(str, false);
     }

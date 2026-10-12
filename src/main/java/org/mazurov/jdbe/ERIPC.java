@@ -175,7 +175,7 @@ public class ERIPC {
                     req.writeString(Locale.getDefault().toString());
                 }
                 case "setLocale" -> {
-                    String arg1 = req.readString(); // locale
+                    String arg1 = req.readString(); 
                     ipc_log("  arg = %s%n", arg1);
                     Locale.setDefault(new Locale(arg1));
                     req.writeString(Locale.getDefault().toString());
@@ -241,8 +241,8 @@ public class ERIPC {
                     req.writeString(null);
                 }
                 case "getFileAttributes" -> {
-                    String arg1 = req.readString(); // filename
-                    String arg2 = req.readString(); // format
+                    String arg1 = req.readString(); 
+                    String arg2 = req.readString(); 
                     ipc_log("  arg1 = %s  arg2 = %s\n", arg1, arg2);
                     String res = dbeGetFileAttributes(arg1, arg2);
                     req.writeString(res);
@@ -267,12 +267,10 @@ public class ERIPC {
                     req.writeArray(res);
                 }
                 case "getExpName" -> {
-                    // XXX add argument == DbeView index (matches native's own XXX comment)
                     String[] res = dbeGetExpName(0);
                     req.writeArray(res);
                 }
                 case "getExpState" -> {
-                    // XXX add argument == DbeView index (matches native's own XXX comment)
                     int[] res = dbeGetExpState(0);
                     req.writeArray(res);
                 }
@@ -283,8 +281,8 @@ public class ERIPC {
                     req.writeArray(res);
                 }
                 case "getFiles" -> {
-                    String arg1 = req.readString(); // dirname
-                    String arg2 = req.readString(); // format
+                    String arg1 = req.readString(); 
+                    String arg2 = req.readString(); 
                     ipc_log ("  arg1 = %s  arg2 = %s%n", arg1, arg2);
                     String res = dbeGetFiles(arg1, arg2);
                     req.writeString(res);

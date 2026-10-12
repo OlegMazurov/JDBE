@@ -32,9 +32,6 @@ public class DBE {
     }
 
     public static String dbeSendSignal(int p, int signum) {
-        // sends an OS signal to a process (native: kill(p, signum)); needs a
-        // platform-specific mechanism (Java has no portable arbitrary-signal API), not
-        // yet ported.
         throw new RuntimeException("DBE.dbeSendSignal not implemented");
     }
 
@@ -91,7 +88,6 @@ public class DBE {
 
     public static String dbeGetFileAttributes(String fileName, String format) {
         if ("/bin/ls -dl ".equals(format)) {
-            // A kind of "/bin/ls -dl " simulation
             File file = new File(fileName);
             if (file.canRead()) {
                 if (file.isDirectory()) {
@@ -165,7 +161,7 @@ public class DBE {
         ArrayList<Integer> prop_id = new ArrayList<>();
         ArrayList<String> prop_name = new ArrayList<>();
         ArrayList<String> prop_uname = new ArrayList<>();
-        ArrayList<String> prop_cname = new ArrayList<>(); //must match TLModeCmd vals!
+        ArrayList<String> prop_cname = new ArrayList<>(); 
 
         prop_id.add(PROP_NONE);
         prop_name.add("NONE");
@@ -189,8 +185,7 @@ public class DBE {
 
         prop_id.add(PROP_EXPID);
         prop_name.add("EXPID");
-        prop_uname.add("Process"); // placeholder...
-        // ...until we finalize how to expose user-level Experiments, descendents
+        prop_uname.add("Process"); 
         prop_cname.add("experiment");
         Object[] darray = new Object[4];
         darray[0] = prop_id.stream().mapToInt(i -> i).toArray();
@@ -352,12 +347,12 @@ public class DBE {
 
         BaseMetricTreeNode root = DbeSession.getInstance().get_reg_metrics_tree();
         List<BaseMetric> baseMetrics = new ArrayList<>();
-        List<Integer> columnOf = new ArrayList<>(); // baseMetrics[k] belongs at valueTable[columnOf[k]]
+        List<Integer> columnOf = new ArrayList<>(); 
         for (int i = 0; i < numMetrics; i++) {
             BaseMetricTreeNode node = root.find(metricCmds[i]);
             BaseMetric bm = node != null ? node.get_BaseMetric() : null;
             if (bm == null)
-                continue; // leave that column at its 0.0 default
+                continue; 
             baseMetrics.add(bm);
             columnOf.add(i);
         }
@@ -412,7 +407,7 @@ public class DBE {
                 || curr.get_num_registered_descendents() > 0;
         boolean _aggregation = curr.is_composite_metric()
                 && curr.get_num_registered_descendents() > 0;
-        boolean _has_value = false; //not used yet; for nodes that don't have metrics
+        boolean _has_value = false; 
         String _unit = null;
         String _unit_uname = null;
 
@@ -424,16 +419,12 @@ public class DBE {
                 throw new IllegalStateException();
             }
             _flavors = bm.get_flavors();
-            // Wire value is native's 1-based ValueTag enum (VT_SHORT=1, ...) -- see the
-            // matching ordinal()+1 conversion in dbeGetMetricList's valtype[] above.
             _vtype = bm.get_vtype().ordinal() + 1;
             _vstyles_capable = bm.get_value_styles();
             int defaultStyles = (bm.hasFlavor(BaseMetric.EXCLUSIVE) || bm.hasFlavor(BaseMetric.INCLUSIVE))
                     ? bm.get_value_styles() & ~VAL_PERCENT : 0;
             _vstyles_e_default_values = convertVisbitsToGuiCheckboxBits(bm, defaultStyles);
             _vstyles_i_default_values = convertVisbitsToGuiCheckboxBits(bm, defaultStyles);
-            // HWC-specific hiding heuristic (native: hide all HWCs by default except the
-            // time variant of c_stalls) isn't ported -- no HWC metrics in this port yet.
         } else {
             // not a base metric
             _name = curr.get_name();
@@ -466,9 +457,6 @@ public class DBE {
             if (include_unregistered /* fetch everything */
                     || child_node.is_registered()
                     || child_node.get_num_registered_descendents() > 0) {
-                //Special case for metrics that aren't registered
-                // but have registered children
-                // Linux example: Total Time is unregistered, CPU Time is registered
                 if (!include_unregistered && /* not fetching everything */
                         !child_node.is_registered () &&
                         (child_node.get_BaseMetric () != null ||
@@ -525,9 +513,6 @@ public class DBE {
     }
 
     public static void dbeDetectLoadMachineModel (int dbevindex) {
-        // TODO: depends on DataSpace ("is_datamode_available") and machine-model detection,
-        // neither of which is ported; this is an optional dataspace-analysis
-        // auto-configuration step, not required for header/basic function display.
     }
 
     public static String dbeSetPrintLimit(int dbevindex, int limit) {
@@ -681,13 +666,7 @@ public class DBE {
         String[] paths = new String[size];
         int[] isJava = new int[size];
 
-        // lobjectsNoJava is a trimmed list of indices provided to front-end skipping the Java
-        // classes. lobjectsNoJava preserves the mapping of the index into the complete lobjs
-        // vector. What front-end sees as lobj[i] is really lobj[lobjectsNoJava[i]];
 
-        // This list is constructed every time GetLoadObjectList() or GetLoadObjectState() is
-        // called. Possibility of further optimization by making it more persistent.
-        // Only consumer of this list is dbeSetLoadObjectState
         dbev.lobjectsNoJava.clear();
 
         int new_index = 0;
@@ -784,8 +763,6 @@ public class DBE {
     }
 
     public static String dbeOpenExperimentList(int dbevindex, String[][] groups, boolean sessionRestart) {
-        // TODO: sessionRestart (DbeSession.reset()) not wired up; not needed for a
-        // first, single experiment-list load.
         return DbeSession.getInstance().setExperimentsGroups(groups);
     }
 
@@ -972,8 +949,6 @@ public class DBE {
         String[] strings = new String[2];
         longs[0] = dbeSetFuncData(dbevindex, sel_obj, type, subtype);
         strings[0] = dbeGetMsg(dbevindex, 1);
-        // longs[1]/strings[1] (source-file id/name for DSP_SOURCE/DSP_DISASM) are left
-        // at 0/null -- those display types aren't ported yet.
         return new Object[] { longs, strings };
     }
 
@@ -1151,7 +1126,7 @@ public class DBE {
                 nvisible++;
 
         Object[] table = new Object[nvisible + 1];
-        table[nvisible] = null; // ji_list: only for annotated src/dis/layout, not reachable here
+        table[nvisible] = null; 
 
         int nv = 0;
         for (int index = 0; index < items.size(); index++) {
@@ -1345,7 +1320,6 @@ public class DBE {
             if (item.obj == null)
                 continue;
             if ("<Total>".equals(item.obj.get_name())) {
-                // Multi-selection that includes <Total> collapses to just <Total>.
                 objs.clear();
                 objs.add(item.obj);
                 break;

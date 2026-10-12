@@ -96,8 +96,6 @@ public class Print {
             throw new RuntimeException("er_print_common_display.datadump() not implemented");
         }
 
-        // shared by er_print_experiment's header path (and, natively, the
-        // statistics/overview paths' first-experiment header)
         boolean load;      // print load-object coverage before the first experiment
         int exp_idx1;      // first experiment index this display covers
 
@@ -219,11 +217,8 @@ public class Print {
 
         public void data_dump() {
             if (stat) {
-                // depends on statistics_sum()/statistics_dump() (Stats_data), not yet
-                // ported.
                 throw new RuntimeException("er_print_experiment statistics display not implemented");
             } else if (over) {
-                // depends on overview_sum()/overview_dump() (Ovw_data), not yet ported.
                 throw new RuntimeException("er_print_experiment overview display not implemented");
             } else if (header) {
                 for (int index = exp_idx1; index <= exp_idx2; index++) {

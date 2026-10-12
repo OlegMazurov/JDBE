@@ -157,7 +157,6 @@ public class BaseMetric {
     };
 
     // enum SubType
-    // sync enum changes with AnMetric.java
     public static final int STATIC = 1; // Type==SIZES, ADDRESS, ONAME
     public static final int EXCLUSIVE = 2;
     public static final int INCLUSIVE = 4;

@@ -15,14 +15,6 @@ along with this program. If not, see <http://www.gnu.org/licenses>. */
 
 package org.mazurov.jdbe;
 
-// A resolved Java method (from jclasses), used both as the "canonical" identity for
-// a method and as the object registered against JIT-compiled address ranges (see
-// Experiment.process_jcm_load_cmd). Deviates from native here: native creates a
-// separate JMethod wrapper object per JIT-compiled instance (one per "jcm" event,
-// referencing this one via usrfunc) so recompilations of the same method get merged
-// back together later via a "comparable objects" pass; we skip that and just reuse
-// this single canonical JMethod directly across every compiled instance's address
-// range, which gets the same merged-by-name result without needing that machinery.
 public class JMethod extends Function {
 
     public long mid;
@@ -33,8 +25,6 @@ public class JMethod extends Function {
         super(id);
     }
 
-    // `signature` must already be set before calling this (matches native's call
-    // order: set_signature() before set_name() in Experiment::read_java_classes_file).
     @Override
     public void set_name(String mangledName) {
         this.mangledName = mangledName;
@@ -42,9 +32,6 @@ public class JMethod extends Function {
         this.name = translated != null ? translated : mangledName;
     }
 
-    // Mirrors native's translate_method (Function.cc:1049-1091): builds
-    // "<mname>(<arg1>, <arg2>, ...)" from the raw JVM parameter descriptor. No return
-    // type is included, matching the call from JMethod::set_name (ret_type=false).
     static String translateMethod(String mname, String sig) {
         if (sig == null)
             return null;
@@ -69,9 +56,6 @@ public class JMethod extends Function {
         return sb.toString();
     }
 
-    // Mirrors native's translate_method_field (Function.cc:956-1042): consumes one
-    // JVM type descriptor starting at pos[0], advances pos[0] past it, and returns the
-    // readable Java source-level type name.
     private static String translateField(String s, int[] pos) {
         if (pos[0] >= s.length())
             return null;

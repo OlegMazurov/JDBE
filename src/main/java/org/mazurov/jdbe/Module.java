@@ -40,9 +40,6 @@ public class Module extends Histable {
         return main_source;
     }
 
-    // Mirrors native's Module::find_jmethod (Module.cc:1827-1840): linear scan by
-    // mangled name + signature, used to avoid creating a duplicate JMethod if a
-    // jclasses record is somehow seen twice for the same method.
     public JMethod find_jmethod(String fullname, String signature) {
         for (Function f : functions) {
             if (f instanceof JMethod jm && fullname.equals(jm.mangledName)

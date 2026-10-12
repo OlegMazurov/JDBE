@@ -63,13 +63,6 @@ public class Settings {
     private String str_tabs;   // colon-separated default tab list (CLI/rc "tabs" command)
     private String str_rtabs;  // same, for rdtMode
 
-    // Mirrors native's Settings.h accumulated-rc-string fields (Settings.cc:121-140),
-    // restricted to the ones this port's read_rc()/set_rc() actually recognize --
-    // see set_rc()'s doc comment for which .gprofng.rc commands are (and are not)
-    // acted on. Each is also just the "has this already been set by an earlier .rc
-    // file" guard set_rc() checks before honoring a later file's directive (matching
-    // native's own "!str_x || override" pattern), except str_dmetrics/str_dsort, which
-    // accumulate (colon-joined) across every .rc file read, same as native.
     public String str_search_path;
     public String str_dmetrics;
     public String str_dsort;
@@ -96,10 +89,6 @@ public class Settings {
         is_loexpand_default = settings.is_loexpand_default;
         tabs_processed = settings.tabs_processed;
 
-        // Mirrors native's Settings copy ctor (Settings.cc:209-266) also copying these
-        // (limit/print_mode/pathmaps were previously missing here -- a real, if latent,
-        // gap: without them, a .gprofng.rc-configured print limit/pathmap/search-path
-        // would never reach a per-view Settings clone).
         limit = settings.limit;
         print_mode = settings.print_mode;
         print_delim = settings.print_delim;
@@ -409,12 +398,6 @@ public class Settings {
         return mem_tab_state;
     }
 
-    // Mirrors native's Settings::proc_tabs (Settings.cc:1336-1389): resolves the
-    // colon-separated default tab list (set via a "tabs"/"rtabs" command, not ported --
-    // no CLI/rc-file directive sets str_tabs/str_rtabs in this port, so they're always
-    // null) into which DispTab/index-object entries start visible. With nothing to set
-    // them, this always falls through to native's own "header" fallback, matching
-    // native's actual default behavior when no tabs command is configured either.
     public /*Cmd_status*/ void proc_tabs(boolean _rdtMode) {
         if (tabs_processed)
             return /*CMD_OK*/;
@@ -449,9 +432,6 @@ public class Settings {
         }
     }
 
-    // Mirrors native's Settings::updateTabAvailability (Settings.cc:1302-1332). Notably,
-    // DSP_LEAKLIST is unconditionally marked unavailable (matching native exactly --
-    // it never calls is_leaklist_available() here despite that method existing).
     public void updateTabAvailability() {
         DbeSession session = DbeSession.getInstance();
         for (DispTab dsptab : tab_list) {
@@ -480,19 +460,8 @@ public class Settings {
         }
     }
 
-    // Default --sysconfdir value baked into native's own build (Makefile.am:
-    // "SYSCONFDIR = @sysconfdir@", autotools' default $prefix/etc with the default
-    // $prefix=/usr/local); this port has no configure/install step of its own, so
-    // there's no real equivalent -- GPROFNG_SYSCONFDIR still overrides it, matching
-    // native, and a missing file here just produces the same warning comment native
-    // does rather than failing.
     private static final String SYSCONFDIR = "/opt/javascope/etc";
 
-    // Mirrors native's Settings::read_rc(char*) (Settings.cc:362-381): reads a single
-    // explicit .gprofng.rc-format file (not the automatic cwd/home/sysconfdir search --
-    // see read_rc(boolean) for that), returning any comments/warnings produced as one
-    // string. override=true: a directive in this file always takes effect even if
-    // something else already set that setting.
     public String read_rc(String path) {
         if (path == null)
             return "Error: empty file name";
@@ -504,13 +473,6 @@ public class Settings {
         return sb.toString();
     }
 
-    // Mirrors native's Settings::read_rc(bool) (Settings.cc:383-431): reads, in order,
-    // ./.gprofng.rc (cwd), $HOME/.gprofng.rc, and the system-wide gprofng.rc
-    // ($GPROFNG_SYSCONFDIR or SYSCONFDIR above). Comments/warnings go to the
-    // application's own comment queue (shown in the "-header" output), matching native.
-    // ipcOrRdtMode restricts the cwd/home files to ADDPATH/PATHMAP only (see set_rc's
-    // doc comment) -- the system file is always processed in full, matching native's
-    // own set_rc(..., /*ipc_or_rdt_mode=*/false) call for it.
     public void read_rc(boolean ipcOrRdtMode) {
         boolean override = false;
 
@@ -562,12 +524,6 @@ public class Settings {
 
     private static final int MAXARGS = 20;
 
-    // Tokenizes one logical .gprofng.rc line into whitespace-separated words, honoring
-    // '"'/'\'' quoting with backslash escapes (\\, \", \', \t, \r, \b, \f, \n) -- mirrors
-    // native's parse_qstring()/strtok_r() combination (util.cc:339-521), minus the rare
-    // numeric-escape (\NNN) form and the GTXT(...) i18n-macro unwrap, neither of which
-    // is meaningful for a hand-written rc file. A token starting with '#' ends the line
-    // (the rest is a comment), matching native's own "*nextarg == '#'" check.
     private static List<String> tokenizeArgs(String line) {
         List<String> toks = new ArrayList<>();
         int i = 0, n = line.length();
@@ -614,20 +570,6 @@ public class Settings {
         return toks;
     }
 
-    // Mirrors native's Settings::set_rc (Settings.cc:443-787): parses one .gprofng.rc
-    // file and acts on each recognized directive. Restricted to the directives this
-    // port actually has a backing feature for -- ADDPATH/PATHMAP (search path/pathmap
-    // resolution), TABS/RTABS (default tab selection, Settings.proc_tabs), NAMEFMT/
-    // VIEWMODE/EN_DESC/LIMIT/PRINTMODE/COMPARE/OBJECT_SHOW/OBJECT_HIDE/OBJECT_API
-    // (all already-ported Settings setters), DMETRICS/DSORT (accumulated into
-    // str_dmetrics/str_dsort only -- same as native, which also just stores the string
-    // here and applies it later, elsewhere, a step this port hasn't wired up yet; see
-    // DbeView.setMetrics/setSort), and INDXOBJDEF (DbeSession.indxobj_define). SCOMPCOM/
-    // DCOMPCOM/COMPCOM/STHRESH/DTHRESH (compiler-commentary filtering), TLMODE/TLDATA
-    // (thread-list/timeline display), and LIBDIRS (dynamic-function preload dirs) are
-    // recognized (so they don't trigger the "unrecognized command" warning) but are
-    // otherwise no-ops: this port has no disassembly/compiler-commentary or
-    // thread-list/timeline view for them to configure.
     public void set_rc(String path, boolean msg, Emsgqueue commentq, boolean override, boolean ipcOrRdtMode) {
         List<String> lines;
         try {
@@ -705,10 +647,6 @@ public class Settings {
             String arg1 = arglist.size() > 1 ? arglist.get(1) : null;
             switch (cmdType) {
                 case DMETRICS -> {
-                    // append new settings to old, same splice-before-":name" logic as
-                    // native (Settings.cc:593-616) -- irrelevant here since this port's
-                    // DbeView.setMetrics never consumes str_dmetrics yet, but kept for
-                    // fidelity against the day it does.
                     if (str_dmetrics != null) {
                         int name = str_dmetrics.indexOf(":name");
                         if (name < 0)
@@ -733,7 +671,7 @@ public class Settings {
                 }
                 case ADDPATH -> str_search_path = str_search_path != null
                         ? str_search_path + ":" + arg0 : arg0;
-                case PATHMAP -> add_pathmap(pathmaps, arg0, arg1); // error (if any) not reported, matches native
+                case PATHMAP -> add_pathmap(pathmaps, arg0, arg1); 
                 case NAMEFMT -> {
                     if (name_format == Histable.NameFormat.NA)
                         set_name_format(arg0);
@@ -792,7 +730,6 @@ public class Settings {
                 case OBJECT_HIDE -> set_libexpand(arg0, LibExpand.LIBEX_HIDE, true);
                 case OBJECT_API -> set_libexpand(arg0, LibExpand.LIBEX_API, true);
                 case COMMENT -> { /* ignore the line */ }
-                // Recognized, but no backing feature in this port (see doc comment above):
                 case SCOMPCOM, STHRESH, DCOMPCOM, COMPCOM, DTHRESH, TLMODE, TLDATA, LIBDIRS -> { }
                 default -> {
                     if (!msg) {

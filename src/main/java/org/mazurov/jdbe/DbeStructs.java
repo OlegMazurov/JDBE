@@ -34,11 +34,6 @@ public class DbeStructs {
     {
         ValueTag tag;
         boolean sign;    // The print result will always begin with a sign (+ or -).
-        // Native stores these in a union (short/int/float/double/char*/long variants);
-        // Java has no aliasing concern, so plain fields stand in for whichever ones
-        // are actually populated for a given `tag`. Only the double/long/string
-        // variants are populated by this port so far (VT_DOUBLE / VT_LLONG,VT_ULLONG /
-        // VT_LABEL); add more as other metric types get wired up.
         double d;
         long l;
         String str;
@@ -51,9 +46,6 @@ public class DbeStructs {
             };
         }
 
-        // Mirrors native's TValue::to_str (util.cc:156-202), restricted to the value
-        // types this port actually produces (VT_DOUBLE for CPU-time-in-seconds,
-        // VT_LLONG/VT_ULLONG for counts/byte totals, VT_LABEL for the Name column).
         String to_str() {
             return switch (tag) {
                 case VT_DOUBLE -> {
@@ -62,7 +54,7 @@ public class DbeStructs {
                     yield sign ? String.format("%+.3f", d) : String.format("%.3f", d);
                 }
                 case VT_LLONG -> sign ? String.format("%+d", l) : String.format("%d", l);
-                case VT_ULLONG -> String.format("%d", l); // non-negative in practice
+                case VT_ULLONG -> String.format("%d", l); 
                 case VT_LABEL -> str != null ? str : "";
                 default -> "";
             };

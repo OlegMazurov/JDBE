@@ -33,9 +33,9 @@ public class PathTree {
         FNode parent;
         Function func;
         Map<Function, FNode> children = new HashMap<>();
-        long[] exclVals = new long[NSLOTS]; // self: samples whose stack ended exactly here
-        long[] inclVals = new long[NSLOTS]; // subtree total: every sample passing through here
-        FNode funclistNext;
+        long[] exclVals = new long[NSLOTS]; 
+        long[] inclVals = new long[NSLOTS]; 
+        FNode funclistNext; 
     }
 
     private final FNode root = new FNode();
@@ -138,9 +138,6 @@ public class PathTree {
             long hsize = dDscr.getLongValue(hsizeOrd, i);
             long hleaked = dDscr.getLongValue(hleakedOrd, i);
             List<Function> stack = exp.resolveStack(frinfo, thrid, ts);
-            // HEAP_LEAK_BYTES sums HLEAKED unconditionally (0 for a matched/freed
-            // record contributes nothing); HEAP_LEAK_CNT additionally requires
-            // HLEAKED != 0, matching native's cond_spec exactly (see doc comment above).
             insertSample(stack,
                     new Slot[] {Slot.HEAP_ALLOC_BYTES, Slot.HEAP_ALLOC_CNT, Slot.HEAP_LEAK_BYTES, Slot.HEAP_LEAK_CNT},
                     new long[] {hsize, 1, hleaked, hleaked != 0 ? 1 : 0});
@@ -327,7 +324,6 @@ public class PathTree {
         return totals;
     }
 
-    // Grand total across every sample, for the <Total> aggregate row.
     long getGrandTotal(Slot slot) {
         ensureBuilt();
         return root.inclVals[slot.ordinal()];

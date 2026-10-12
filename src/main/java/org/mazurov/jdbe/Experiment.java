@@ -51,10 +51,8 @@ public class Experiment {
     private static final String SP_FRINFO_FILE = "data.frameinfo";
     private static final String SP_PROFILE_FILE = "profile";
 
-    // Pckt_type (data_pckts.h) values relevant to data.frameinfo
     private static final int FRAME_PCKT = 11;
     private static final int UID_PCKT = 17;
-    // Info_type (data_pckts.h) values for Frame_packet sub-records
     private static final int STACK_INFO = 1;
     private static final int JAVA_INFO = 2;
     private static final int OMP_INFO = 3;
@@ -79,9 +77,6 @@ public class Experiment {
         long end;
     }
 
-    // minimal: real JThread tracking also maintains a tid-sorted index
-    // (jthreads_idx) for stack-sample thread lookup; not needed for header display,
-    // so not ported yet.
     static class JThread {
         String name;
         String group_name;
@@ -89,7 +84,7 @@ public class Experiment {
         long tid;
         long jthr;
         long jenv;
-        long jthr_id; // internal JThread object id, native: parse.cc:557,581 (jthreads.size() at registration)
+        long jthr_id; 
         long start;
         long end;
     }
@@ -181,7 +176,7 @@ public class Experiment {
     String os_version;                // Operating system name
     String dversion;                  // driver version string (er_kernel)
     String jversion;                  // Java version string (java profiling)
-    String username;                  // user name (not currently set from log.xml)
+    String username;                  
     String machinemodel;               // machine model name, if known
     Platform_t platform = Platform_t.Unknown; // Sparc, Sparcv9, Intel, ...
     WSize_t wsize = WSize_t.Wnone;    // word size: may be W32 or W64
@@ -231,8 +226,8 @@ public class Experiment {
     }
 
     List<SegMem> segItems = new ArrayList<>();     // master list of all segment loads/unloads
-    List<SegMem> activeSegs = new ArrayList<>();   // currently-mapped segments (simplified
-                                                    // stand-in for native's interval-tree "maps")
+    List<SegMem> activeSegs = new ArrayList<>();   
+                                                    
 
     static class MapRecord {
         enum Kind { LOAD, UNLOAD }
@@ -262,11 +257,6 @@ public class Experiment {
         mrecs.add(lo, mrec);
     }
 
-    // Frame/uid graph read from data.frameinfo: each stack is a chain of UIDnodes (one
-    // PC per node), letting stacks that share a common tail (the overwhelmingly common
-    // case) share nodes instead of repeating them. RawFramePacket is the entry point:
-    // one per "frinfo" uid referenced from a profile record, pointing at the head node
-    // of its native/Java/OMP stack chains.
     static class UIDnode {
         long uid;
         long val;
@@ -286,14 +276,8 @@ public class Experiment {
         int omp_state;
     }
 
-    // Simplified relative to native, which caches in a fixed-size single-slot-per-bucket
-    // hash table (uidHTable) with a sorted-array binary-search fallback (uidnodes) for
-    // cache misses/collisions -- a HashMap gives exact, always-correct O(1) lookup and
-    // replaces both.
     Map<Long, UIDnode> uidHTable = new HashMap<>();
     List<UIDnode> uidnodes = new ArrayList<>();
-    // Simplified relative to native's sorted Vector + binary search (find_frame_packet);
-    // a HashMap gives the same exact-match lookup this needs, with no sort step.
     Map<Long, RawFramePacket> frmpckts = new HashMap<>();
     int invalid_packet;
 
@@ -311,10 +295,6 @@ public class Experiment {
         return node;
     }
 
-    // Returns a placeholder node for a uid referenced without its own inline PC array
-    // (e.g. a Stack_info/Java_info sub-record with no stack bytes). Deliberately NOT
-    // registered in uidHTable/uidnodes, matching native exactly: this is a best-effort,
-    // throwaway link target, not a durable node.
     private UIDnode get_uid_node(long uid) {
         if (uid == 0)
             return null;
@@ -322,14 +302,10 @@ public class Experiment {
         if (node != null)
             return node;
         node = new UIDnode(uid, 0);
-        node.next = node; // self-loop sentinel
+        node.next = node; 
         return node;
     }
 
-    // val32 must already be the zero-extended unsigned magnitude of a 32-bit PC (as
-    // produced by u32()); maps the 32-bit-truncated sentinel patterns back to their
-    // 64-bit form, matching native's funcAddr(). Only exercised for 32-bit target
-    // processes (wsize == W32); this port's test data is all 64-bit.
     private static long funcAddr32(long val32) {
         if (val32 == (SP_LEAF_CHECK_MARKER & 0xFFFFFFFFL))
             return SP_LEAF_CHECK_MARKER;
@@ -345,29 +321,17 @@ public class Experiment {
         long read(ByteBuffer buf, long off);
     }
 
-    // Unifies native's two add_uid() overloads (uint32_t[]/uint64_t[] stacks), which
-    // differ only in element size and whether 32-bit PCs get promoted via funcAddr().
     private UIDnode addUid(ByteBuffer buf, long uid, long arrOff, long stackSize, long linkUid) {
         boolean is32 = (wsize == W32);
         ElemReader reader = is32 ? (b, off) -> funcAddr32(u32(b, off)) : Experiment::u64;
         return addUid(buf, uid, arrOff, stackSize, linkUid, is32 ? 4 : 8, reader);
     }
 
-    // JAVA_INFO (64-bit target only): stack entries are (bci, jmethodID) pairs per
-    // the JVMTI/AsyncGetCallTrace ABI (JVMPI_CallFrame{lineno,jmethodID}), packed as
-    // two 8-byte-aligned slots: the bci is a plain signed 32-bit value occupying the
-    // first slot's low 4 bytes (the high 4 bytes are unused padding, a historical
-    // struct-layout mismatch native calls out as "bug 6909545"), and the jmethodID
-    // is the second slot, verbatim -- so read each directly from the original
-    // buffer rather than staging a byte-shuffled copy first.
     private UIDnode addJavaInfoUid(ByteBuffer buf, long uid, long arrOff, long stackSize, long linkUid) {
         ElemReader reader = (b, off) -> ((off - arrOff) / 8) % 2 == 0 ? b.getInt((int) off) : b.getLong((int) off);
         return addUid(buf, uid, arrOff, stackSize, linkUid, 8, reader);
     }
 
-    // Builds/extends the uid's node chain in `stackSize/elemSize` steps, one element
-    // per node, reusing existing nodes where a previously-seen chain already covers
-    // this position (this is exactly the tail-sharing dedup described above).
     private UIDnode addUid(ByteBuffer buf, long uid, long arrOff, long stackSize, long linkUid,
                             int elemSize, ElemReader reader) {
         if (uid == 0)
@@ -413,10 +377,6 @@ public class Experiment {
         read_data_file(SP_FRINFO_FILE, String.format("Loading CallStack Data: %s", new File(expt_name).getName()));
     }
 
-    // Native reads this lazily, only when a view actually needs clock-profile data
-    // (Experiment::get_profile_events()); we read it eagerly at open() time instead,
-    // like every other file in this port, since there's no view-driven scheduling here
-    // yet and eager loading is directly testable on its own.
     void read_profile_file() {
         DataDescriptor dDscr = getDataDescriptor(DATA_CLOCK);
         if (dDscr == null)
@@ -426,11 +386,6 @@ public class Experiment {
 
     private static final String SP_HEAPTRACE_FILE = "heaptrace";
 
-    // Like read_profile_file(): native reads this lazily (Experiment::get_heap_events()),
-    // we read it eagerly. "heaptrace" uses the exact same field-driven packet format
-    // as "profile" (log.xml's <profile name="heaptrace"><profpckt kind="5">...), so
-    // read_data_file()/readGenericFieldPacket() already handle it -- the only new
-    // logic needed is computing the derived HLEAKED property afterward.
     void read_heaptrace_file() {
         DataDescriptor dDscr = getDataDescriptor(DATA_HEAP);
         if (dDscr == null)
@@ -448,10 +403,10 @@ public class Experiment {
         try {
             data = Files.readAllBytes(f.toPath());
         } catch (IOException e) {
-            return; // matches native: dwin->not_opened() -> silent return
+            return; 
         }
         if (wsize != W64 || data.length < PRUSAGE64_SIZE)
-            return; // this port's test data is all 64-bit (see wsize's own doc comment)
+            return; 
         ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
         long nrecords = data.length / PRUSAGE64_SIZE;
         long lastOff = (nrecords - 1) * (long) PRUSAGE64_SIZE;
@@ -508,11 +463,8 @@ public class Experiment {
         try {
             data = Files.readAllBytes(f.toPath());
         } catch (IOException e) {
-            return; // matches native: dwin->not_opened() -> silent return
+            return; 
         }
-        // Every currently-supported gprofng platform (x86, x86_64, aarch64, RISC-V) is
-        // little-endian, so native's need_swap_endian is dead code in practice; we
-        // always read little-endian rather than porting byte-swap detection.
         ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
         long offset = 0;
         long remaining = data.length;
@@ -534,12 +486,6 @@ public class Experiment {
             return 0;
         int tsize = u16(buf, offset);
         if (tsize == 0) {
-            // Expected, not an error: the writer flushes in fixed PROFILE_BUFFER_CHUNK
-            // increments, so a partially-filled final chunk leaves trailing zero bytes.
-            // Native's invalid_packet counter is reserved for a raw-pointer-misalignment
-            // check that has no equivalent here (we always read at exact byte offsets
-            // into a ByteBuffer, never through a possibly-misaligned C pointer), so it's
-            // never incremented in this port.
             return PROFILE_BUFFER_CHUNK - offset % PROFILE_BUFFER_CHUNK;
         }
         if (offset + tsize > buf.capacity())
@@ -554,12 +500,6 @@ public class Experiment {
         return tsize;
     }
 
-    // Field-driven packet reader for any packet kind described by a <profpckt>/<field>
-    // block in log.xml (currently: OPROF_PCKT clock-profile samples in the "profile"
-    // file). Native also special-cases the legacy PROF_PCKT format here (a for-loop
-    // over per-microstate CPU-time fields, for backward compatibility with old SS12
-    // experiments); not ported since it doesn't apply to OPROF_PCKT, the only format
-    // modern experiments (including this port's test data) actually use.
     private void readGenericFieldPacket(ByteBuffer buf, long offset, int type, long pktsz) {
         PacketDescriptor pDscr = getPacketDescriptor(type);
         if (pDscr == null)
@@ -589,8 +529,8 @@ public class Experiment {
                     if (len > 0 && buf.get((int) fieldOff) != 0)
                         dDscr.setObjValue(field.propID().ordinal(), recn, readCString(buf, fieldOff, len));
                 }
-                default -> { } // DOUBLE/OBJ/DATE/BOOL/ENUM/LAST/NONE: matches native
-                                // ("ignoring the following cases (why?)")
+                default -> { } 
+                                
             }
         }
     }
@@ -609,22 +549,22 @@ public class Experiment {
 
     private void readFramePacket(ByteBuffer buf, long offset, int tsize) {
         RawFramePacket fp = new RawFramePacket();
-        fp.uid = u64(buf, offset + 8);       // Frame_packet.uid
-        long hsize = u32(buf, offset + 4);   // Frame_packet.hsize
+        fp.uid = u64(buf, offset + 8);       
+        long hsize = u32(buf, offset + 4);   
         long ptr = offset + hsize;
         long end = offset + tsize;
         while (ptr < end) {
-            long subHsize = u32(buf, ptr);           // Common_info.hsize
+            long subHsize = u32(buf, ptr);           
             if (subHsize == 0 || ptr + subHsize > end)
                 break;
-            long kindRaw = u32(buf, ptr + 4);        // Common_info.kind
+            long kindRaw = u32(buf, ptr + 4);        
             boolean compressed = (kindRaw & COMPRESSED_INFO) != 0;
             int kind = (int) (kindRaw & ~COMPRESSED_INFO);
             switch (kind) {
                 case STACK_INFO -> {
-                    long stackOff = ptr + 16;         // sizeof(Stack_info)
+                    long stackOff = ptr + 16;         
                     long stackSize = subHsize - 16;
-                    long uidn = u64(buf, ptr + 8);    // Stack_info.uid
+                    long uidn = u64(buf, ptr + 8);    
                     if (stackSize <= 0) {
                         fp.uidn = get_uid_node(uidn);
                     } else {
@@ -637,9 +577,9 @@ public class Experiment {
                     }
                 }
                 case JAVA_INFO -> {
-                    long stackOff = ptr + 16;         // sizeof(Java_info)
+                    long stackOff = ptr + 16;         
                     long stackSize = subHsize - 16;
-                    long uidj = u64(buf, ptr + 8);    // Java_info.uid
+                    long uidj = u64(buf, ptr + 8);    
                     if (stackSize <= 0) {
                         fp.uidj = get_uid_node(uidj);
                     } else {
@@ -648,20 +588,16 @@ public class Experiment {
                             stackSize -= 8;
                             linkUid = u64(buf, stackOff + stackSize);
                         }
-                        // 64-bit targets: confirmed by inspecting this experiment's actual
-                        // on-disk data that these are (bci, jmethodID) pairs, not one PC
-                        // per slot -- see addJavaInfoUid(). 32-bit targets don't need this
-                        // (native's "bug 6909545" workaround only applies to 64-bit).
                         fp.uidj = wsize == W64
                                 ? addJavaInfoUid(buf, uidj, stackOff, stackSize, linkUid)
                                 : addUid(buf, uidj, stackOff, stackSize, linkUid);
                     }
                 }
-                case OMP_INFO -> fp.omp_state = (int) u32(buf, ptr + 8); // OMP_info.omp_state
+                case OMP_INFO -> fp.omp_state = (int) u32(buf, ptr + 8); 
                 case OMP2_INFO -> {
-                    long ompUid = u64(buf, ptr + 16); // OMP2_info.uid
+                    long ompUid = u64(buf, ptr + 16); 
                     fp.omp_uid = get_uid_node(ompUid);
-                    fp.omp_state = (int) u32(buf, ptr + 8); // OMP2_info.omp_state
+                    fp.omp_state = (int) u32(buf, ptr + 8); 
                 }
                 default -> { }
             }
@@ -671,9 +607,9 @@ public class Experiment {
     }
 
     private void readUidPacket(ByteBuffer buf, long offset, int tsize) {
-        long flags = u32(buf, offset + 4);   // Uid_packet.flags
-        long uid = u64(buf, offset + 8);     // Uid_packet.uid
-        long arrOff = offset + 16;           // sizeof(Uid_packet)
+        long flags = u32(buf, offset + 4);   
+        long uid = u64(buf, offset + 8);     
+        long arrOff = offset + 16;           
         long arrLength = tsize - 16;
         if (arrLength <= 0)
             return;
@@ -689,7 +625,7 @@ public class Experiment {
 
     private Exp_status status;        // Error status
 
-    private boolean has_java = true;    // TODO
+    private boolean has_java = true;    
     protected String uarglist;       // argv[] array, as a string
     private String utargname;      // basename of argv[0] extracted from uarglist
 
@@ -803,8 +739,6 @@ public class Experiment {
             last_event = ts;
     }
 
-    // parses a "seconds.nanoseconds" timestamp string (the fractional part is already a
-    // fixed-width nanosecond count, not a decimal fraction to be rescaled)
     private static long parseTStamp(String s) {
         int len = s.length();
         int i = 0;
@@ -854,9 +788,6 @@ public class Experiment {
         return f;
     }
 
-    // The following process_*_cmd methods are the actual experiment-record event
-    // handlers (native: parse.cc); this is the bulk of what remains to be ported for
-    // Experiment. Stubbed for now.
     void process_sample_cmd(String cmd, long ts, int id, String label) {
         throw new RuntimeException("Experiment.process_sample_cmd not implemented");
     }
@@ -871,24 +802,21 @@ public class Experiment {
 
     void process_jthr_start_cmd(String cmd, String name, String grpname, String prntname,
                                  long tid, long jthr, long jenv, long ts) {
-        // Skips maintaining the tid-sorted jthreads_idx (used natively for a binary
-        // search; this port's linear scan over the much smaller jthreads list doesn't
-        // need it, per map_pckt_to_Jthread's own doc comment).
         JThread jthread = new JThread();
         jthread.name = name;
         jthread.group_name = grpname;
         jthread.parent_name = prntname;
-        jthread.tid = mapThrid(tid); // native: parse.cc:554
+        jthread.tid = mapThrid(tid); 
         jthread.jthr = jthr;
         jthread.jenv = jenv;
-        jthread.jthr_id = jthreads.size(); // native: parse.cc:557
+        jthread.jthr_id = jthreads.size(); 
         jthread.start = ts;
         jthread.end = MAX_TIME;
         jthreads.add(jthread);
     }
 
     void process_jthr_end_cmd(String cmd, long tid, long jthr, long jenv, long ts) {
-        long ttid = mapThrid(tid); // native: parse.cc:531
+        long ttid = mapThrid(tid); 
         JThread jthread = null;
         for (JThread jt : jthreads) {
             if (jt.tid == ttid) {
@@ -898,10 +826,10 @@ public class Experiment {
         }
         if (jthread == null) {
             jthread = new JThread();
-            jthread.tid = ttid; // native: parse.cc:554
+            jthread.tid = ttid; 
             jthread.jthr = jthr;
             jthread.jenv = jenv;
-            jthread.jthr_id = jthreads.size(); // native: parse.cc:581
+            jthread.jthr_id = jthreads.size(); 
             jthread.start = ZERO_TIME;
             jthreads.add(jthread);
         }
@@ -947,9 +875,6 @@ public class Experiment {
                               long offset, long modeflags, long chk, String nm) {
         if (nm == null || (nm.length() > 1 && nm.regionMatches(1, SP_MAP_UNRESOLVABLE, 0, SP_MAP_UNRESOLVABLE.length())))
             return;
-        // Skip non-text (non read+exec) segments. Unlike native, we don't attempt
-        // ELF/stabs reading (SEG_FLAG_JVM/OMP pseudo-functions, DbeFile/archive lookup),
-        // so a created LoadObject here is name/size/overlap-tracking only.
         if (modeflags != PROT_READ_EXEC)
             return;
         LoadObject lo = createLoadObject(nm);
@@ -975,11 +900,6 @@ public class Experiment {
 
     void process_fn_load_cmd(Module mod, String fname, long vaddr, int fsize, long ts) {
         if (mod != null) {
-            // TODO: native fills address gaps within the module with synthetic
-            // "<static>@0x..." functions (sorted by img_offset); not exercised by
-            // current test data (no "dynfunc" events precede a "function" event here),
-            // so simplified to registering the module's existing functions for overlap
-            // tracking only.
             for (Function f : mod.functions) {
                 MapRecord mrec = new MapRecord();
                 mrec.kind = MapRecord.Kind.LOAD;
@@ -1031,11 +951,6 @@ public class Experiment {
         mrecs.clear();
     }
 
-    // Address->object resolution index, built lazily on first query from segItems
-    // (sorted by base, with a running max-end for a bounded backward scan -- a
-    // simplified stand-in for native's PRBTree-based interval tree, adequate since
-    // real overlaps are rare here). Invalidated (rebuilt) if segItems grows after the
-    // first query, e.g. once stage 5c starts registering jcm/JIT address ranges.
     private List<SegMem> sortedSegItems;
     private long[] segEndMax;
     private int segIndexSize = -1; // segItems.size() as of the last index build
@@ -1104,7 +1019,7 @@ public class Experiment {
 
     private JThread map_pckt_to_Jthread(long tid, long ts) {
         if (!has_java)
-            return null; // JTHREAD_DEFAULT
+            return null; 
         for (JThread jt : jthreads)
             if (jt.tid == tid && ts >= jt.start && ts < jt.end)
                 return jt;
@@ -1151,7 +1066,7 @@ public class Experiment {
 
         JThread jthread = map_pckt_to_Jthread(thrid, ts);
         if (jthread == JTHREAD_NONE && javaResolvedReal)
-            jthread = null; // promoted to JTHREAD_DEFAULT
+            jthread = null; 
         boolean isSystemThread = jthread != null && jthread != JTHREAD_NONE
                 && "system".equals(jthread.group_name);
         if (jthread == JTHREAD_NONE || isSystemThread)
@@ -1182,8 +1097,6 @@ public class Experiment {
                 return false; // duplicate load record
             warnSegOverlap(smem, lo);
         }
-        // native's "sm_hi" lookups walk an address-ordered tree (locate_up), so
-        // matches here need to be sorted by base to reproduce the same order.
         List<SegMem> hiOverlaps = new ArrayList<>();
         for (SegMem other : activeSegs) {
             if (other.base > smem.base && other.base < smem.base + smem.size)
@@ -1206,12 +1119,7 @@ public class Experiment {
     void process_jcm_load_cmd(String cmd, long mid, long vaddr, int msize, long ts) {
         Object obj = jmapsLocate(mid, ts);
         if (!(obj instanceof JMethod jfunc))
-            return; // matches native's early-return when jmaps has no match at this id/time
-        // Deviates from native: it wraps jfunc in a fresh per-compilation JMethod
-        // (dfunc, linked back via usrfunc) so recompilations later get merged back
-        // together by name via a "comparable objects" pass we haven't ported. We
-        // register jfunc itself against this address range instead, which gets the
-        // same merged-by-identity result directly, without needing that machinery.
+            return; 
         MapRecord mrec = new MapRecord();
         mrec.kind = MapRecord.Kind.LOAD;
         mrec.obj = jfunc;
@@ -1235,19 +1143,11 @@ public class Experiment {
         return e != null ? e.getValue() : null;
     }
 
-    // Pckt_type-style ARCH_type values for the jclasses binary format (data_pckts.h;
-    // ARCH_TYPE(x,y) = ((ARCH_x_TYPE << 8) | y), with ARCH_JCLASS_TYPE=10,
-    // ARCH_JMETHOD_TYPE=11, ARCH_JCLASS_LOCATION_TYPE=14 -- this file predates and is
-    // unrelated to the Pckt_type enum used by data.frameinfo/profile).
     private static final int ARCH_JCLASS = (10 << 8) | 3;
     private static final int ARCH_JMETHOD = (11 << 8) | 3;
     private static final int ARCH_JCLASS_LOCATION = (14 << 8) | 3;
     private static final String SP_JCLASSES_FILE = "jclasses";
 
-    // Simplified relative to native: each class's actual containing jar/location
-    // (ARCH_JCLASS_LOCATION records, resolved via DbeFile path lookup) isn't needed
-    // for a flat function-name list, so every Java class's Module is parented under
-    // one synthetic LoadObject instead of its real jar.
     private LoadObject javaClassesLo;
     private final Map<String, Module> javaModulesByClassName = new HashMap<>();
 
@@ -1257,7 +1157,7 @@ public class Experiment {
         try {
             data = Files.readAllBytes(f.toPath());
         } catch (IOException e) {
-            return; // matches native: file not present/openable -> silent return
+            return; 
         }
         ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
         Module curMod = null;
@@ -1301,14 +1201,11 @@ public class Experiment {
                 }
                 jmapsInsert(methodId, curLoaded, jm);
             }
-            // ARCH_JCLASS_LOCATION and anything else: skip (jar/location resolution
-            // not needed for a flat function-name list)
             offset += tsize;
         }
     }
 
     private Module getOrCreateJavaModule(String className, String fileName) {
-        // JVM internal form "Lpkg/pkg/Class;" -> "pkg.pkg.Class"
         String dotted = className;
         if (dotted.startsWith("L") && dotted.endsWith(";"))
             dotted = dotted.substring(1, dotted.length() - 1);
@@ -1334,8 +1231,6 @@ public class Experiment {
         }
     }
 
-    // Reads a NUL-terminated string and returns both its value and the padded byte
-    // length it occupies on disk (native's ARCH_STRLEN: (strlen(s)+4) & ~0x3).
     private static ArchStr readArchString(ByteBuffer buf, long off, long limit) {
         int start = (int) off;
         int end = start;
@@ -1361,8 +1256,6 @@ public class Experiment {
     }
 
     public void DBG_memuse(String sname) {
-        // finds the sample named sname and dumps its in-memory size (debug command
-        // "dmem"); depends on the samples list / Sample class, not yet ported.
         throw new RuntimeException("Experiment.DBG_memuse not implemented");
     }
 
@@ -1459,9 +1352,6 @@ public class Experiment {
 
     void read_log_file() {
         File logFile = new File(String.format("%s/%s", expt_name, SP_LOG_FILE));
-        // log.xml is a sequence of top-level elements with no enclosing root (it's
-        // written incrementally during collection), so it isn't well-formed XML on its
-        // own; wrap it in a synthetic root before handing it to the SAX parser.
         try (InputStream body = new FileInputStream(logFile);
              InputStream in = new SequenceInputStream(java.util.Collections.enumeration(List.of(
                      new ByteArrayInputStream(("<" + ExperimentHandler.SP_TAG_LOG_WRAPPER + ">").getBytes()),
@@ -1510,8 +1400,6 @@ public class Experiment {
     }
 
     protected Exp_status open_epilogue() {
-        // TODO: mapTagValue(PROP_EXPID, userExpId) sets up a session-wide tag-registry
-        // mapping (not yet ported); not needed for header display.
         post_process();
         if (last_event != ZERO_TIME) { // if last_event is known
             long ts = last_event - exp_start_time;
@@ -1542,6 +1430,8 @@ public class Experiment {
             resume_ts = MAX_TIME; // collection is paused
         }
 
+        // GC: prune events outside of experiment duration, calculate GC duration,
+        // renumber ids
         gc_duration = ZERO_TIME;
         gcevents.removeIf(gcevent -> gcevent.end - exp_start_time < 0 || last_event - gcevent.start < 0);
         for (int index = 0; index < gcevents.size(); index++) {
@@ -1693,7 +1583,7 @@ public class Experiment {
             String scope_str = switch (coll_params.sync_scope) {
                 case ExperimentHandler.SYNCSCOPE_JAVA -> "JAVA-APIs";
                 case ExperimentHandler.SYNCSCOPE_NATIVE -> "Native-APIs";
-                default -> "Native- and Java-APIs"; // 0, or JAVA|NATIVE
+                default -> "Native- and Java-APIs"; 
             };
             if (coll_params.sync_threshold < 0)
                 commentq.append(new Emsg(Cmsg_warn.CMSG_COMMENT, String.format(
@@ -1876,8 +1766,6 @@ public class Experiment {
         private static final String SP_TAG_CPU =             "cpu";
         private static final String SP_TAG_DATAPTR =         "dataptr";
         private static final String SP_TAG_EVENT =           "event";
-        // synthetic root element read_log_file() wraps log.xml's content in (log.xml
-        // has no real root of its own -- see read_log_file()); silently ignored
         static final String SP_TAG_LOG_WRAPPER = "gprofng-jdbe-log";
 
         private static final String SP_TAG_EXPERIMENT =      "experiment";
