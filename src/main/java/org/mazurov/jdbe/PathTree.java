@@ -329,6 +329,11 @@ public class PathTree {
         return root.inclVals[slot.ordinal()];
     }
 
+    List<Function> get_funcs() {
+        ensureBuilt();
+        return new ArrayList<>(fnMap.keySet());
+    }
+
     Hist_data compute_metrics(MetricList mlist, Histable.Type type, Hist_data.Mode mode, List<Histable> objs) {
         if (type == Histable.Type.INDEXOBJ)
             return computeMetricsIndx(mlist, mode, objs);

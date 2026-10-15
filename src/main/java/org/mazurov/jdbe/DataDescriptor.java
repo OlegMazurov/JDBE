@@ -81,7 +81,7 @@ public class DataDescriptor {
     }
 
     public String getName() {
-        return type.name();
+        return Enums.get_prof_data_type_name(type);
     }
 
     public String getUName() {

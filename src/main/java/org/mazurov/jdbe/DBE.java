@@ -19,9 +19,11 @@ import java.io.File;
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
 
 import static org.mazurov.jdbe.Enums.*;
 
@@ -1063,6 +1065,8 @@ public class DBE {
                 if (obj != null)
                     dbeSetSelObjV2(dbevindex, obj.id);
             }
+        } else if (type == FuncListDisp_type.DSP_TIMELINE.value) {
+            dbeSetSelObjV2(dbevindex, id);
         }
     }
 
@@ -1110,6 +1114,18 @@ public class DBE {
         cd.set_out_file(outfile);
         cd.data_dump();
         return null;
+    }
+
+    public static Object[] dbeGetCallTreeFuncs(int dbevindex) {
+        DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+        List<Function> funcs = dbev.get_path_tree().get_funcs();
+        long[] funcIds = new long[funcs.size()];
+        String[] funcNames = new String[funcs.size()];
+        for (int i = 0; i < funcs.size(); i++) {
+            funcIds[i] = funcs.get(i).id;
+            funcNames[i] = funcs.get(i).get_name();
+        }
+        return new Object[] { funcIds, funcNames, funcIds };
     }
 
     public static Object[] dbeGetFuncList(int dbevindex, int type, int subtype) {
@@ -1464,8 +1480,8 @@ public class DBE {
         throw new RuntimeException("dbeShowAllMetrics not implemented");
     }
 
-    public static long dbeGetObject(int arg1, long arg2, long arg3) {
-        throw new RuntimeException("dbeGetObject not implemented");
+    public static long dbeGetObject(int dbevindex, long sel_func, long sel_pc) {
+        return sel_pc != 0 ? sel_pc : sel_func;
     }
 
     public static String dbeGetName(int dbevindex, int expId) {
@@ -1609,6 +1625,104 @@ public class DBE {
         return new Object[] { expDscrInfo, expDscrProps };
     }
 
+    static DataView getTimelinePackets(int dbevindex, int exp_id, int data_id, int entity_prop_id) {
+        DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+        int[] sortprops = { Prop_type.PROP_HWCTAG.ordinal(), entity_prop_id, Prop_type.PROP_TSTAMP.ordinal() };
+        return dbev.get_filtered_events(exp_id, data_id, sortprops, sortprops.length);
+    }
+
+    static long getIdxByVals(DataView packets, int aux, int entity_prop_val, long time, Relation rel) {
+        Data.Datum[] tval = new Data.Datum[3];
+        tval[0] = new Data.Datum();
+        tval[0].i = aux;
+        tval[1] = new Data.Datum();
+        tval[1].i = entity_prop_val;
+        tval[2] = new Data.Datum();
+        tval[2].l = time;
+        return packets.getIdxByVals(tval, rel);
+    }
+
+    static boolean hasInvisbleTLEvents(Experiment exp, VMode view_mode) {
+        return exp.hasJava() && view_mode == VMode.VMODE_USER;
+    }
+
+    static boolean isVisibleTLEvent(Experiment exp, VMode view_mode, DataView packets, long idx) {
+        if (hasInvisbleTLEvents(exp, view_mode)) {
+            Object obj = packets.getObjValue(Prop_type.PROP_JTHREAD.ordinal(), idx);
+            Experiment.JThread jthread = obj instanceof Experiment.JThread ? (Experiment.JThread) obj : null;
+            if (jthread == Experiment.JTHREAD_NONE || (jthread != null && jthread.is_system()))
+                return false;
+        }
+        return true;
+    }
+
+    static boolean isValidIdx(DataView packets, int entity_prop_id, int aux, int entity_prop_val, long idx) {
+        if (idx < 0 || idx >= packets.getSize())
+            return false;
+        int pkt_aux = packets.getIntValue(Prop_type.PROP_HWCTAG.ordinal(), idx);
+        if (pkt_aux != aux)
+            return false;
+        if (entity_prop_id == Prop_type.PROP_EXPID.ordinal() || entity_prop_id == Prop_type.PROP_NONE.ordinal())
+            return true; // not a packet property; we know the packet is in this experiment
+        int pkt_ent = packets.getIntValue(entity_prop_id, idx);
+        return pkt_ent == entity_prop_val;
+    }
+
+    static int getPropIdByName(String name) {
+        try {
+            return Prop_type.valueOf("PROP_" + name).ordinal();
+        } catch (IllegalArgumentException e) {
+            return Prop_type.PROP_NONE.ordinal();
+        }
+    }
+
+    static boolean dbeHasTLData(int dbevindex, int exp_id, int data_id, int entity_prop_id,
+                  int entity_prop_value, int aux) {
+        DataView packets = getTimelinePackets(dbevindex, exp_id, data_id, entity_prop_id);
+        if (packets == null || packets.getSize() == 0)
+            return false;
+        long start_ind = getIdxByVals(packets, aux, entity_prop_value, 0, Relation.REL_GTEQ); // time >= 0
+        if (start_ind < 0)
+            return false;
+
+        DbeView dbev = DbeSession.getInstance().getView (dbevindex);
+        VMode view_mode = dbev.get_view_mode();
+        Experiment exp = DbeSession.getInstance().get_exp(exp_id);
+        if (!hasInvisbleTLEvents(exp, view_mode))
+            return true; // all events are visible, no further checking required
+        long end_ind = getIdxByVals(packets, aux, entity_prop_value,
+                MAX_TIME, Relation.REL_LTEQ);
+        for (long ii = start_ind; ii <= end_ind; ii++) {
+            if (!isVisibleTLEvent(exp, view_mode, packets, ii))
+                continue;
+            return true; // first visible packet => has data
+        }
+        return false;
+    }
+
+    public static boolean[] dbeHasTLData(int dbev_index, int[] exp_ids, int[] data_ids,
+                  int[] entity_prop_ids, // LWP,CPU,THR, etc
+                  int[] entity_prop_values, int[] auxs) {
+        DbeView dbev = DbeSession.getInstance().getView(dbev_index);
+        if (!dbev.isShowAll() && (dbev.isShowHideChanged () || dbev.isNewViewMode())) {
+            // LIBRARY_VISIBILITY
+            dbev.resetAndConstructShowHideStacks();
+            if (dbev.isNewViewMode())
+                dbev.resetNewViewMode();
+            if (dbev.isShowHideChanged())
+                dbev.resetShowHideChanged();
+        }
+
+        int sz = exp_ids.length;
+        boolean[] hasVec = new boolean[sz];
+        for (int ii = 0; ii < sz; ii++) {
+            boolean hasData = dbeHasTLData(dbev_index, exp_ids[ii], data_ids[ii],
+                    entity_prop_ids[ii], entity_prop_values[ii], auxs[ii]);
+            hasVec[ii] = hasData;
+        }
+        return hasVec;
+    }
+
     public static Object[] dbeGetExperimentTimeInfo(int[] expIds) {
         int sz = expIds.length;
         long[] offsetTime = new long[sz];
@@ -1629,8 +1743,60 @@ public class DBE {
         return new Object[] { offsetTime, startTime, endTime, startWallSec, hostname, cpuFreq };
     }
 
-    public static Object[] dbeGetEntities(int arg1, int arg2, int arg3) {
-        throw new RuntimeException("dbeGetEntities not implemented");
+    public static Object[] dbeGetEntities(int dbevindex, int exp_id, int entity_prop_id) {
+        DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+        Experiment exp = DbeSession.getInstance().get_exp(exp_id);
+        if (exp == null)
+            return null;
+
+        List<Long> vals = new ArrayList<>();
+        if (entity_prop_id == Prop_type.PROP_EXPID.ordinal()) {
+            vals.add((long) exp_id);
+        } else {
+            TreeSet<Long> distinct = new TreeSet<>();
+            for (ProfData_type dt : new ProfData_type[]{ProfData_type.DATA_CLOCK, ProfData_type.DATA_HEAP}) {
+                DataDescriptor ddscr = exp.getDataDescriptor(dt);
+                if (ddscr == null || ddscr.getProp(Prop_type.values()[entity_prop_id]) == null)
+                    continue;
+                long n = ddscr.getSize();
+                for (long i = 0; i < n; i++)
+                    distinct.add((long) ddscr.getIntValue(entity_prop_id, i));
+            }
+            vals.addAll(distinct);
+        }
+
+        VMode view_mode = dbev.get_view_mode();
+        boolean show_java_threadnames = entity_prop_id == Prop_type.PROP_THRID.ordinal()
+                && view_mode != VMode.VMODE_MACHINE;
+
+        int sz = vals.size();
+        int[] entity_prop_vals = new int[sz];
+        String[] jthr_names = new String[sz];
+        String[] jthr_g_names = new String[sz];
+        String[] jthr_p_names = new String[sz];
+        for (int i = 0; i < sz; i++) {
+            long v = vals.get(i);
+            entity_prop_vals[i] = (int) v;
+            if (show_java_threadnames) {
+                Experiment.JThread jthread = exp.get_jthread(v);
+                if (jthread != null && jthread != Experiment.JTHREAD_NONE) {
+                    jthr_names[i] = jthread.name;
+                    jthr_g_names[i] = jthread.group_name;
+                    jthr_p_names[i] = jthread.parent_name;
+                }
+            }
+        }
+        String entity_prop_name = Prop_type.values()[entity_prop_id].name().replaceFirst("^PROP_", "");
+        return new Object[] {
+                entity_prop_vals, jthr_names, jthr_g_names, jthr_p_names, new String[]{entity_prop_name}
+        };
+    }
+
+    public static Object[] dbeGetEntitiesV2(int dbevindex, int[] exp_ids, int entity_prop_id) {
+        Object[] res = new Object[exp_ids.length];
+        for (int ii = 0; ii < exp_ids.length; ii++)
+            res[ii] = dbeGetEntities(dbevindex, exp_ids[ii], entity_prop_id);
+        return res;
     }
 
     public static Object[] dbeGetDataDescriptions(int arg0, int arg1) {
@@ -1646,16 +1812,95 @@ public class DBE {
         throw new RuntimeException("dbeGetStackNames not implemented");
     }
 
-    public static long[] dbeGetStackFunctions(int arg0, long arg1) {
-        throw new RuntimeException("dbeGetStackFunctions not implemented");
+    public static long[] dbeGetStackFunctions(int dbevindex, long stack) {
+        List<Function> funcs = resolveStackFunctionsById(stack);
+        if (funcs == null)
+            return null;
+        long[] ids = new long[funcs.size()];
+        for (int i = 0; i < ids.length; i++)
+            ids[i] = funcs.get(i).id;
+        return ids;
+    }
+
+    public static Object[] dbeGetStacksFunctions(int dbevindex, long[] stacks) {
+        Object[] res = new Object[stacks.length];
+        for (int i = 0; i < stacks.length; i++)
+            res[i] = dbeGetStackFunctions(dbevindex, stacks[i]);
+        return res;
+    }
+
+    private static List<Function> resolveStackFunctionsById(long frinfo) {
+        DbeSession session = DbeSession.getInstance();
+        for (int i = 0; i < session.nexps(); i++) {
+            List<Function> stack = session.get_exp(i).resolveStackById(frinfo);
+            if (stack != null)
+                return stack;
+        }
+        return null;
     }
 
     public static long[] dbeGetStackPCs(int arg0, long arg1) {
         throw new RuntimeException("dbeGetStackPCs not implemented");
     }
 
-    public static long[][] dbeGetSamples(int arg1, int arg2) {
-        throw new RuntimeException("dbeGetSamples not implemented");
+    public static Object[] dbeGetSamples(int dbevindex, int exp_id, long lo_idx, long hi_idx) {
+        DataView packets = getTimelinePackets(dbevindex, exp_id, ProfData_type.DATA_SAMPLE.getValue(),
+                Prop_type.PROP_EXPID.ordinal());
+        if (packets == null || packets.getSize() == 0)
+            return null;
+        long lo = lo_idx < 0 ? 0 : lo_idx;
+        long max = packets.getSize() - 1;
+        long hi = (hi_idx < 0 || hi_idx > max) ? max : hi_idx;
+
+        int n = (int) (hi - lo + 1);
+        long[][] sarray = new long[n][];
+        long[] starts = new long[n];
+        long[] ends = new long[n];
+        long[] rtimes = new long[n];
+        String[] startNames = new String[n];
+        String[] endNames = new String[n];
+        int[] sampId = new int[n];
+
+        for (long index = lo; index <= hi; index++) {
+            int i = (int) (index - lo);
+            Experiment.Sample sample = (Experiment.Sample) packets.getObjValue(Prop_type.PROP_SMPLOBJ.ordinal(), index);
+            Experiment.PrUsage prusage = sample.prusage != null ? sample.prusage : new Experiment.PrUsage();
+            sarray[i] = prusage.getMstateValues();
+            starts[i] = sample.start_time;
+            ends[i] = sample.end_time;
+            rtimes[i] = prusage.pr_rtime;
+            startNames[i] = sample.start_label;
+            endNames[i] = sample.end_label;
+            sampId[i] = sample.number;
+        }
+        return new Object[] { sarray, starts, ends, rtimes, startNames, endNames, sampId };
+    }
+
+    public static Object[] dbeGetGCEvents(int dbevindex, int exp_id, long lo_idx, long hi_idx) {
+        DataView packets = getTimelinePackets(dbevindex, exp_id, ProfData_type.DATA_GCEVENT.getValue(),
+                Prop_type.PROP_EXPID.ordinal());
+        if (packets == null || packets.getSize() == 0)
+            return null;
+        long lo = lo_idx < 0 ? 0 : lo_idx;
+        long max = packets.getSize() - 1;
+        long hi = (hi_idx < 0 || hi_idx > max) ? max : hi_idx;
+
+        List<Long> starts = new ArrayList<>();
+        List<Long> ends = new ArrayList<>();
+        List<Integer> eventId = new ArrayList<>();
+        for (long index = lo; index <= hi; index++) {
+            Object obj = packets.getObjValue(Prop_type.PROP_GCEVENTOBJ.ordinal(), index);
+            if (obj instanceof Experiment.GCEvent gcevent) {
+                starts.add(gcevent.start);
+                ends.add(gcevent.end);
+                eventId.add(gcevent.id);
+            }
+        }
+        return new Object[] {
+                starts.stream().mapToLong(Long::longValue).toArray(),
+                ends.stream().mapToLong(Long::longValue).toArray(),
+                eventId.stream().mapToInt(Integer::intValue).toArray(),
+        };
     }
 
     public static long[][] dbeGetMemInfo(int arg1, int arg2) {
@@ -1663,7 +1908,14 @@ public class DBE {
     }
 
     public static String[] dbeGetFuncNames(int arg1, long[] arg2) {
-        throw new RuntimeException("dbeGetFuncNames not implemented");
+        if (arg2 == null)
+            return null;
+        String[] names = new String[arg2.length];
+        for (int i = 0; i < arg2.length; i++) {
+            Histable obj = DbeSession.getInstance().findObjectById(arg2[i]);
+            names[i] = obj == null ? null : obj.get_name();
+        }
+        return names;
     }
 
     public static String[] dbeGetObjNamesV2(int dbevindex, long[] ids) {
@@ -1718,9 +1970,554 @@ public class DBE {
         throw new RuntimeException("dbeGetExprValues not implemented");
     }
 
-    public static int[] dbeGetTLData(int arg1, String arg2, String arg3, String arg4,
-                                     long arg5, long arg6, int arg7) {
-        throw new RuntimeException("dbeGetTLData not implemented");
+    public static Object[] dbeGetTLData(int dbevindex, int exp_id, int data_id,
+                                         int entity_prop_id, int entity_prop_val, int aux,
+                                         long start_ts, long delta, int numDeltas,
+                                         boolean getRepresentatives, String[] chartProps) {
+        DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+        Experiment exp = DbeSession.getInstance().get_exp(exp_id);
+        if (exp == null)
+            return null;
+        if (!getRepresentatives && (chartProps == null || chartProps.length == 0))
+            return null;
+        if (delta <= 0)
+            return null;
+
+        long tmp_ts = start_ts + delta * numDeltas;
+        if (tmp_ts < start_ts)
+            tmp_ts = MAX_TIME;
+        final long end_ts = tmp_ts;
+
+        DataView packets = getTimelinePackets(dbevindex, exp_id, data_id, entity_prop_id);
+        if (packets == null)
+            return null;
+
+        VMode view_mode = dbev.get_view_mode();
+
+        List<Long> representativeEvents = null;
+        int[] binRepIdx = null;
+
+        int[] propIds = null;
+        Object[] propVals = null; // long[] (flat) or long[][] (per-state), one per chartProps entry
+        int[] propNumStates = null;
+        boolean[] propCumulativeChart = null;
+        long[] propCumulativeRecentBinLastVal = null;
+        long[] propCumulativeRecentBinHighVal = null;
+        int[] propCumulativeRecentBin = null;
+
+        boolean repsShowDuration = false;
+        boolean statesUseDuration = false;
+        boolean extendMicrostates = false;
+        long ptimerTickDuration = exp.coll_params.ptimer_usec * 1000L; // nanoseconds per tick
+        boolean hasDuration = packets.getProp(Prop_type.PROP_EVT_TIME) != null;
+        if (hasDuration) {
+            if (entity_prop_id == Prop_type.PROP_CPUID.ordinal()) {
+                repsShowDuration = false;
+                statesUseDuration = false;
+            } else if (entity_prop_id == Prop_type.PROP_THRID.ordinal()
+                    || entity_prop_id == Prop_type.PROP_LWPID.ordinal()) {
+                repsShowDuration = true;
+                statesUseDuration = true;
+                extendMicrostates = data_id == ProfData_type.DATA_CLOCK.getValue() && ptimerTickDuration < delta;
+            } else { // PROP_EXPID, PROP_NONE (experiment summary row), or unrecognized
+                if (data_id == ProfData_type.DATA_SAMPLE.getValue() || data_id == ProfData_type.DATA_GCEVENT.getValue()) {
+                    repsShowDuration = true;
+                    statesUseDuration = true;
+                } else if (data_id == ProfData_type.DATA_CLOCK.getValue()) {
+                    repsShowDuration = false;
+                    statesUseDuration = true;
+                    extendMicrostates = true;
+                } else {
+                    repsShowDuration = false;
+                    statesUseDuration = true;
+                }
+            }
+        }
+        final boolean reverseScan = repsShowDuration || extendMicrostates;
+
+        // determine range of packet indices (lo_pkt_idx, hi_pkt_idx)
+        long lo_pkt_idx, hi_pkt_idx;
+        if (extendMicrostates && !(entity_prop_id == Prop_type.PROP_THRID.ordinal()
+                || entity_prop_id == Prop_type.PROP_LWPID.ordinal())) {
+            long exp_end_time = exp.getLastEvent() + 1;
+            hi_pkt_idx = getIdxByVals(packets, aux, entity_prop_val, exp_end_time, Relation.REL_LT);
+        } else {
+            hi_pkt_idx = getIdxByVals(packets, aux, entity_prop_val, end_ts, Relation.REL_LT);
+        }
+        if (repsShowDuration) {
+            // events that end "off screen" to the right: check if the next packet
+            // actually started in-range (packet timestamps mark end of duration, not start)
+            long idx;
+            if (hi_pkt_idx >= 0)
+                idx = hi_pkt_idx + 1;
+            else
+                idx = getIdxByVals(packets, aux, entity_prop_val, end_ts, Relation.REL_GTEQ);
+            if (isValidIdx(packets, entity_prop_id, aux, entity_prop_val, idx)) {
+                long pkt_ts = packets.getLongValue(Prop_type.PROP_TSTAMP.ordinal(), idx);
+                long duration = packets.getLongValue(Prop_type.PROP_EVT_TIME.ordinal(), idx);
+                pkt_ts -= duration;
+                if (pkt_ts < end_ts)
+                    hi_pkt_idx = idx;
+            }
+        }
+        lo_pkt_idx = getIdxByVals(packets, aux, entity_prop_val, start_ts, Relation.REL_GTEQ);
+
+        // allocate structs that return chart data
+        boolean hasCumulativeCharts = false;
+        if (chartProps != null && chartProps.length > 0) {
+            int nprops = chartProps.length;
+            propIds = new int[nprops];
+            propVals = new Object[nprops];
+            propNumStates = new int[nprops];
+            propCumulativeChart = new boolean[nprops];
+            propCumulativeRecentBinLastVal = new long[nprops];
+            propCumulativeRecentBinHighVal = new long[nprops];
+            propCumulativeRecentBin = new int[nprops];
+            for (int propNum = 0; propNum < nprops; propNum++) {
+                String propStr = chartProps[propNum];
+                int items_per_prop = 0;
+                int prop_id = Prop_type.PROP_NONE.ordinal();
+                if ("EVT_COUNT".equals(propStr)) {
+                    items_per_prop = 1; // use PROP_NONE for counting packets
+                } else {
+                    int lookup_prop_id = getPropIdByName(propStr);
+                    PropDescr propDscr = packets.getProp(Prop_type.values()[lookup_prop_id]);
+                    if (propDscr != null) {
+                        switch (propDscr.vtype) {
+                            case TYPE_INT32, TYPE_UINT32, TYPE_INT64, TYPE_UINT64 -> {
+                                items_per_prop = propDscr.getMaxState() + 1; // extra slot for out-of-range
+                                prop_id = lookup_prop_id;
+                            }
+                            default -> { /* TYPE_DOUBLE/STRING/OBJ/DATE: not implemented yet */ }
+                        }
+                    }
+                }
+                Object vals = items_per_prop == 0 ? null
+                        : items_per_prop == 1 ? new long[numDeltas]
+                        : new long[numDeltas][]; // on-demand per-bin state arrays
+                boolean isCumulativeChart = prop_id == Prop_type.PROP_HCUR_LEAKS.ordinal()
+                        || prop_id == Prop_type.PROP_HCUR_ALLOCS.ordinal();
+                if (isCumulativeChart)
+                    hasCumulativeCharts = true;
+                propIds[propNum] = prop_id;
+                propVals[propNum] = vals;
+                propNumStates[propNum] = items_per_prop;
+                propCumulativeChart[propNum] = isCumulativeChart;
+            }
+        }
+
+        // Adjust idx range for calculating 'cumulative charts' e.g. heap size
+        if (hasCumulativeCharts) {
+            long lo_idx;
+            if (lo_pkt_idx >= 0)
+                lo_idx = lo_pkt_idx - 1;
+            else
+                lo_idx = getIdxByVals(packets, aux, entity_prop_val, start_ts, Relation.REL_LT);
+            if (isValidIdx(packets, entity_prop_id, aux, entity_prop_val, lo_idx)) {
+                for (int propNum = 0; propNum < propCumulativeChart.length; propNum++) {
+                    if (!propCumulativeChart[propNum])
+                        continue;
+                    long value = packets.getLongValue(propIds[propNum], lo_idx);
+                    propCumulativeRecentBinLastVal[propNum] = value;
+                    propCumulativeRecentBinHighVal[propNum] = value;
+                }
+                lo_pkt_idx = lo_idx;
+                if (hi_pkt_idx < lo_pkt_idx)
+                    hi_pkt_idx = lo_pkt_idx;
+            }
+        }
+
+        if (lo_pkt_idx >= 0 && hi_pkt_idx >= 0) {
+            if (getRepresentatives) {
+                representativeEvents = new ArrayList<>();
+                binRepIdx = new int[numDeltas];
+                Arrays.fill(binRepIdx, -1);
+            }
+
+            long start_idx, idx_inc;
+            if (!reverseScan) {
+                start_idx = lo_pkt_idx;
+                idx_inc = 1;
+            } else {
+                start_idx = hi_pkt_idx;
+                idx_inc = -1;
+            }
+            for (long ii = start_idx; ii >= lo_pkt_idx && ii <= hi_pkt_idx; ii += idx_inc) {
+                if (!isVisibleTLEvent(exp, view_mode, packets, ii) && !hasCumulativeCharts)
+                    continue;
+
+                long pkt_end_ts = packets.getLongValue(Prop_type.PROP_TSTAMP.ordinal(), ii);
+                long pkt_dur = hasDuration ? packets.getLongValue(Prop_type.PROP_EVT_TIME.ordinal(), ii) : 0;
+                long pkt_start_ts = pkt_end_ts - pkt_dur;
+                if (pkt_end_ts < start_ts && !hasCumulativeCharts)
+                    continue; // weird, should not happen
+                if (pkt_start_ts >= end_ts)
+                    continue; // could happen
+
+                long bin_end_ts = pkt_end_ts >= end_ts ? end_ts - 1 : pkt_end_ts;
+                int tmp_end_bin = (int) ((bin_end_ts - start_ts) / delta);
+                long bin_start_ts = Math.max(pkt_start_ts, start_ts);
+                int tmp_start_bin = (int) ((bin_start_ts - start_ts) / delta);
+
+                boolean is_offscreen = tmp_end_bin < 0;
+                if (tmp_end_bin < 0)
+                    tmp_end_bin = 0;
+                int pkt_end_bin = tmp_end_bin;
+                int pkt_start_bin = tmp_start_bin;
+
+                if (getRepresentatives && !is_offscreen) {
+                    int bin = reverseScan ? pkt_start_bin : pkt_end_bin;
+                    int eventIdx = binRepIdx[bin];
+                    if (eventIdx == -1) {
+                        binRepIdx[bin] = representativeEvents.size();
+                        representativeEvents.add(ii);
+                    }
+                }
+
+                if (propIds != null) {
+                    for (int propNum = 0; propNum < propIds.length; propNum++) {
+                        Object thisProp = propVals[propNum];
+                        if (thisProp == null)
+                            continue;
+                        if (is_offscreen && !propCumulativeChart[propNum])
+                            continue;
+                        int propId = propIds[propNum];
+                        long val = propId == Prop_type.PROP_NONE.ordinal() ? 1 : packets.getLongValue(propId, ii);
+                        int nitems = propNumStates[propNum];
+                        if (nitems < 1) {
+                            continue;
+                        } else if (nitems == 1) {
+                            long[] thisPropVals = (long[]) thisProp;
+                            int bin = statesUseDuration ? pkt_start_bin : pkt_end_bin;
+                            if (!propCumulativeChart[propNum]) {
+                                thisPropVals[bin] += val;
+                            } else {
+                                long high_value = propCumulativeRecentBinHighVal[propNum];
+                                int last_bin = propCumulativeRecentBin[propNum];
+                                if (last_bin < bin) {
+                                    thisPropVals[last_bin] = high_value;
+                                    long last_value = propCumulativeRecentBinLastVal[propNum];
+                                    for (int kk = last_bin + 1; kk < bin; kk++)
+                                        thisPropVals[kk] = last_value;
+                                    high_value = 0;
+                                    propCumulativeRecentBinHighVal[propNum] = 0;
+                                    propCumulativeRecentBin[propNum] = bin;
+                                }
+                                long this_value = packets.getLongValue(propId, ii);
+                                propCumulativeRecentBinLastVal[propNum] = this_value;
+                                if (high_value < this_value) {
+                                    high_value = this_value;
+                                    propCumulativeRecentBinHighVal[propNum] = high_value;
+                                }
+                                if (ii == hi_pkt_idx) {
+                                    thisPropVals[bin] = high_value;
+                                    for (int kk = bin + 1; kk < numDeltas; kk++)
+                                        thisPropVals[kk] = this_value;
+                                }
+                            }
+                        } else {
+                            // val is actually a state #
+                            long[][] thisPropStateVals = (long[][]) thisProp;
+                            long stateNum = (val >= 0 && val < nitems) ? val : nitems - 1;
+
+                            long graph_pkt_dur = pkt_dur;
+                            long graph_pkt_start_ts = pkt_start_ts;
+                            int tmp2_start_bin = pkt_start_bin;
+                            if (propId == Prop_type.PROP_MSTATE.ordinal() && statesUseDuration && extendMicrostates) {
+                                // microstate stacks are shown/filtered with width=NTICK-1, but
+                                // graphs need width=NTICK to account for all ticks
+                                graph_pkt_dur += ptimerTickDuration;
+                                graph_pkt_start_ts -= ptimerTickDuration;
+                                long bst = Math.max(graph_pkt_start_ts, start_ts);
+                                tmp2_start_bin = (int) ((bst - start_ts) / delta);
+                            }
+                            int graph_pkt_start_bin = statesUseDuration ? tmp2_start_bin : pkt_end_bin;
+
+                            long weight;
+                            if (propId == Prop_type.PROP_MSTATE.ordinal())
+                                weight = packets.getLongValue(Prop_type.PROP_NTICK.ordinal(), ii) * ptimerTickDuration;
+                            else if (graph_pkt_dur != 0)
+                                weight = graph_pkt_dur;
+                            else
+                                weight = 1;
+                            double value_per_bin;
+                            if (graph_pkt_start_bin != pkt_end_bin)
+                                value_per_bin = weight / ((double) graph_pkt_dur / delta);
+                            else
+                                value_per_bin = weight;
+
+                            for (int evtbin = graph_pkt_start_bin; evtbin <= pkt_end_bin; evtbin++) {
+                                long[] stateValues = thisPropStateVals[evtbin];
+                                if (stateValues == null) {
+                                    stateValues = new long[nitems];
+                                    thisPropStateVals[evtbin] = stateValues;
+                                }
+                                double add;
+                                if (graph_pkt_start_bin == pkt_end_bin
+                                        || (evtbin > graph_pkt_start_bin && evtbin < pkt_end_bin)) {
+                                    add = value_per_bin;
+                                } else {
+                                    long bin_start = start_ts + (long) evtbin * delta;
+                                    long bin_end = start_ts + (long) (evtbin + 1) * delta - 1;
+                                    if (evtbin == graph_pkt_start_bin) {
+                                        add = graph_pkt_start_ts < bin_start ? value_per_bin
+                                                : value_per_bin * ((double) (bin_end - graph_pkt_start_ts) / delta);
+                                    } else { // rightmost bin
+                                        add = pkt_end_ts > bin_end ? value_per_bin
+                                                : value_per_bin * ((double) (pkt_end_ts - bin_start) / delta);
+                                    }
+                                }
+                                stateValues[(int) stateNum] += (long) add;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (representativeEvents != null && reverseScan) {
+                if (repsShowDuration) {
+                    // prune events completely obscured by an earlier (longer) one; list is
+                    // sorted by decreasing end-timestamp, so a start >= the previous kept
+                    // event's start means this one is fully hidden
+                    List<Long> pruned = new ArrayList<>();
+                    long prev_start_ts = MAX_TIME;
+                    for (long ii : representativeEvents) {
+                        long tmp_end = packets.getLongValue(Prop_type.PROP_TSTAMP.ordinal(), ii);
+                        long tmp_dur = packets.getLongValue(Prop_type.PROP_EVT_TIME.ordinal(), ii);
+                        long tmp_start = tmp_end - tmp_dur;
+                        if (tmp_start >= prev_start_ts)
+                            continue;
+                        prev_start_ts = tmp_start;
+                        pruned.add(ii);
+                    }
+                    Collections.reverse(pruned); // invert to increasing end-timestamp order
+                    representativeEvents = pruned;
+                } else {
+                    Collections.reverse(representativeEvents);
+                }
+            }
+        }
+
+        Object representativeVals = getRepresentatives
+                ? dbeGetTLDataRepVals(view_mode, start_ts, delta, numDeltas, packets, representativeEvents, repsShowDuration)
+                : null;
+        return new Object[] { representativeVals, propVals };
+    }
+
+    private static Object[] dbeGetTLDataRepVals(VMode view_mode, long start_ts, long delta, int numDeltas,
+                                                 DataView packets, List<Long> representativeEvents, boolean showDuration) {
+        int numrecs = representativeEvents == null ? 0 : representativeEvents.size();
+        int[] startBins = new int[numrecs];
+        int[] numBins = new int[numrecs];
+        long[] eventIdxs = new long[numrecs];
+        boolean hasStackIds = packets.getProp(Prop_type.PROP_FRINFO) != null;
+        long[] stackIds = hasStackIds ? new long[numrecs] : null;
+        boolean hasMstates = packets.getProp(Prop_type.PROP_MSTATE) != null;
+        int[] mstates = hasMstates ? new int[numrecs] : null;
+        boolean hasSampleVals = packets.getProp(Prop_type.PROP_SMPLOBJ) != null;
+        long[][] sampleVals = hasSampleVals ? new long[numrecs][] : null;
+        long[] timeStart = new long[numrecs];
+        long[] timeEnd = new long[numrecs];
+
+        int prevEndBin = -1;
+        for (int eventIdx = 0; eventIdx < numrecs; eventIdx++) {
+            long packetIdx = representativeEvents.get(eventIdx);
+            long pkt_tstamp = packets.getLongValue(Prop_type.PROP_TSTAMP.ordinal(), packetIdx);
+            long pkt_dur = showDuration ? packets.getLongValue(Prop_type.PROP_EVT_TIME.ordinal(), packetIdx) : 0;
+            timeStart[eventIdx] = pkt_tstamp - pkt_dur;
+            timeEnd[eventIdx] = pkt_tstamp;
+
+            int startBin = (int) ((pkt_tstamp - pkt_dur - start_ts) / delta);
+            if (startBin <= prevEndBin)
+                startBin = prevEndBin + 1;
+            int endBin = (int) ((pkt_tstamp - start_ts) / delta);
+            if (endBin >= numDeltas)
+                endBin = numDeltas - 1;
+            int binCnt = endBin - startBin + 1;
+            prevEndBin = endBin;
+
+            startBins[eventIdx] = startBin;
+            numBins[eventIdx] = binCnt;
+            eventIdxs[eventIdx] = packetIdx;
+            if (stackIds != null)
+                stackIds[eventIdx] = packets.getLongValue(Prop_type.PROP_FRINFO.ordinal(), packetIdx);
+            if (mstates != null)
+                mstates[eventIdx] = packets.getIntValue(Prop_type.PROP_MSTATE.ordinal(), packetIdx);
+            if (sampleVals != null) {
+                Object obj = packets.getObjValue(Prop_type.PROP_SMPLOBJ.ordinal(), packetIdx);
+                Experiment.Sample sample = obj instanceof Experiment.Sample ? (Experiment.Sample) obj : null;
+                Experiment.PrUsage prusage = sample != null ? sample.prusage : null;
+                if (prusage == null)
+                    prusage = new Experiment.PrUsage();
+                sampleVals[eventIdx] = prusage.getMstateValues();
+            }
+        }
+        return new Object[] { startBins, numBins, eventIdxs, stackIds, mstates, sampleVals, timeStart, timeEnd };
+    }
+
+    static long getTLVisibleIdxByStepping(Experiment exp, VMode view_mode, int entity_prop_id, DataView packets,
+                                           int aux, int entity_prop_val, long idx, long move_count, int direction) {
+        if (direction == 0)
+            move_count = 0;
+        while (true) {
+            if (!isValidIdx(packets, entity_prop_id, aux, entity_prop_val, idx))
+                return -1;
+            if (isVisibleTLEvent(exp, view_mode, packets, idx)) {
+                if (move_count <= 0)
+                    break;
+                move_count--;
+            }
+            if (direction == 0)
+                return -1;
+            idx += direction;
+        }
+        return idx;
+    }
+
+    static long getTLVisibleIdxByVals(Experiment exp, VMode view_mode, int entity_prop_id, DataView packets,
+                                       int aux, int entity_prop_val, long time, Relation rel) {
+        long idx = getIdxByVals(packets, aux, entity_prop_val, time, rel);
+        if (!hasInvisbleTLEvents(exp, view_mode))
+            return idx;
+        if (idx < 0)
+            return idx;
+        if (rel == Relation.REL_EQ)
+            return -1; // would require bi-directional search... not supported for now
+        int direction = (rel == Relation.REL_LT || rel == Relation.REL_LTEQ) ? -1 : 1;
+        return getTLVisibleIdxByStepping(exp, view_mode, entity_prop_id, packets, aux, entity_prop_val,
+                idx, 0 /* first match */, direction);
+    }
+
+    public static long[] dbeGetTLEventCenterTime(int dbevindex, int exp_id, int data_id, int entity_prop_id,
+                                                  int entity_prop_val, int aux, long event_id, long move_count) {
+        DataView packets = getTimelinePackets(dbevindex, exp_id, data_id, entity_prop_id);
+        if (packets == null)
+            return null;
+        DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+        VMode view_mode = dbev.get_view_mode();
+        Experiment exp = DbeSession.getInstance().get_exp(exp_id);
+
+        int direction;
+        if (move_count == 0)
+            direction = 0;
+        else if (move_count < 0) {
+            move_count = -move_count;
+            direction = -1;
+        } else {
+            direction = 1;
+        }
+        long idx = getTLVisibleIdxByStepping(exp, view_mode, entity_prop_id, packets, aux, entity_prop_val,
+                event_id, move_count, direction);
+        if (idx < 0)
+            return null;
+        long ts = packets.getLongValue(Prop_type.PROP_TSTAMP.ordinal(), idx);
+        long dur = packets.getLongValue(Prop_type.PROP_EVT_TIME.ordinal(), idx);
+        long center = ts - dur / 2;
+        return new long[] { idx, center };
+    }
+
+    public static long dbeGetTLEventIdxNearTime(int dbevindex, int exp_id, int data_id, int entity_prop_id,
+                                                 int entity_prop_val, int aux, int searchDirection, long tstamp) {
+        DataView packets = getTimelinePackets(dbevindex, exp_id, data_id, entity_prop_id);
+        if (packets == null)
+            return -1;
+        DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+        VMode view_mode = dbev.get_view_mode();
+        Experiment exp = DbeSession.getInstance().get_exp(exp_id);
+
+        if (searchDirection < 0) {
+            long idx = getTLVisibleIdxByVals(exp, view_mode, entity_prop_id, packets, aux, entity_prop_val,
+                    tstamp, Relation.REL_LTEQ);
+            if (idx != -1)
+                return idx;
+            searchDirection = 1; // couldn't find to left, try to right
+        }
+        if (searchDirection > 0) {
+            long idx = getTLVisibleIdxByVals(exp, view_mode, entity_prop_id, packets, aux, entity_prop_val,
+                    tstamp, Relation.REL_GTEQ);
+            if (idx != -1)
+                return idx;
+            // couldn't find to right, fall through to generic
+        }
+        long idx1 = getTLVisibleIdxByVals(exp, view_mode, entity_prop_id, packets, aux, entity_prop_val,
+                tstamp, Relation.REL_LT);
+        long idx2 = getTLVisibleIdxByVals(exp, view_mode, entity_prop_id, packets, aux, entity_prop_val,
+                tstamp, Relation.REL_GTEQ);
+        if (idx1 == -1)
+            return idx2;
+        if (idx2 == -1)
+            return idx1;
+
+        long t1 = packets.getLongValue(Prop_type.PROP_TSTAMP.ordinal(), idx1);
+        long t2 = packets.getLongValue(Prop_type.PROP_TSTAMP.ordinal(), idx2);
+        long t2dur = packets.getLongValue(Prop_type.PROP_EVT_TIME.ordinal(), idx2);
+        long delta1 = tstamp - t1; // should always be positive
+        long delta2 = (t2 - t2dur) - tstamp; // if negative, overlaps idx1
+        return delta1 > delta2 ? idx2 : idx1;
+    }
+
+    private static List<Function> resolveTLStackFunctions(Experiment exp, DataView packets, long idx) {
+        if (packets.getProp(Prop_type.PROP_FRINFO) == null)
+            return null;
+        long frinfo = packets.getLongValue(Prop_type.PROP_FRINFO.ordinal(), idx);
+        if (frinfo == 0)
+            return null;
+        long thrid = packets.getIntValue(Prop_type.PROP_THRID.ordinal(), idx);
+        long ts = packets.getLongValue(Prop_type.PROP_TSTAMP.ordinal(), idx);
+        return exp.resolveStack(frinfo, thrid, ts);
+    }
+
+    private static Object[] getTLDetailValues(Experiment exp, int data_id, DataView packets, long idx) {
+        long[] value = new long[15];
+        value[0] = packets.getIntValue(Prop_type.PROP_LWPID.ordinal(), idx);
+        value[1] = packets.getIntValue(Prop_type.PROP_THRID.ordinal(), idx);
+        value[2] = packets.getIntValue(Prop_type.PROP_CPUID.ordinal(), idx);
+        value[3] = packets.getLongValue(Prop_type.PROP_TSTAMP.ordinal(), idx);
+
+        List<Function> stack = resolveTLStackFunctions(exp, packets, idx);
+        long[] funcIds = null;
+        String[] funcNames = null;
+        if (stack != null) {
+            funcIds = new long[stack.size()];
+            funcNames = new String[stack.size()];
+            for (int i = 0; i < stack.size(); i++) {
+                Function f = stack.get(i);
+                funcIds[i] = f.id;
+                funcNames[i] = f.get_name();
+            }
+            value[4] = packets.getLongValue(Prop_type.PROP_FRINFO.ordinal(), idx);
+            value[5] = funcIds[0];
+        }
+
+        if (data_id == ProfData_type.DATA_CLOCK.getValue()) {
+            value[6] = packets.getIntValue(Prop_type.PROP_MSTATE.ordinal(), idx);
+            value[7] = exp.coll_params.ptimer_usec * 1000L // nanoseconds
+                    * packets.getLongValue(Prop_type.PROP_NTICK.ordinal(), idx);
+            value[8] = packets.getIntValue(Prop_type.PROP_OMPSTATE.ordinal(), idx);
+            value[9] = packets.getLongValue(Prop_type.PROP_EVT_TIME.ordinal(), idx); // visual duration
+        } else if (data_id == ProfData_type.DATA_HEAP.getValue() || data_id == ProfData_type.DATA_HEAPSZ.getValue()) {
+            value[6] = packets.getIntValue(Prop_type.PROP_HTYPE.ordinal(), idx);
+            value[7] = packets.getLongValue(Prop_type.PROP_HSIZE.ordinal(), idx);
+            value[8] = packets.getLongValue(Prop_type.PROP_HVADDR.ordinal(), idx);
+            value[9] = packets.getLongValue(Prop_type.PROP_HOVADDR.ordinal(), idx);
+            value[10] = packets.getLongValue(Prop_type.PROP_HLEAKED.ordinal(), idx);
+            value[11] = packets.getLongValue(Prop_type.PROP_HFREED.ordinal(), idx);
+            value[12] = packets.getLongValue(Prop_type.PROP_HCUR_ALLOCS.ordinal(), idx);
+            value[13] = packets.getLongValue(Prop_type.PROP_HCUR_LEAKS.ordinal(), idx);
+        }
+
+        return new Object[] { value, funcIds, funcNames, funcIds, funcNames };
+    }
+
+    public static Object[] dbeGetTLDetails(int dbevindex, int exp_id, int data_id,
+                                            int entity_prop_id, long event_id) {
+        Experiment exp = DbeSession.getInstance().get_exp(exp_id < 0 ? 0 : exp_id);
+        if (exp == null)
+            return null;
+        DataView packets = getTimelinePackets(dbevindex, exp_id, data_id, entity_prop_id);
+        if (packets == null)
+            return null;
+        return getTLDetailValues(exp, data_id, packets, event_id);
     }
 
     public static int dbeGetNxtEvent(int arg1, String arg2, String arg3, long arg4) {

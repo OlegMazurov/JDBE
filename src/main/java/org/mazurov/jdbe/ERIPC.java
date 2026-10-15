@@ -232,6 +232,94 @@ public class ERIPC {
                     Object[] res = dbeGetExperimentDataDescriptors(expIds);
                     req.writeArray(res);
                 }
+                case "hasTLData" -> {
+                    int dbevindex = req.readInt();
+                    int[] exp_ids = (int[]) req.readArray();
+                    int[] data_ids = (int[]) req.readArray();
+                    int[] eprop_ids = (int[]) req.readArray();
+                    int[] eprop_vals = (int[]) req.readArray();
+                    int[] auxs = (int[]) req.readArray();
+                    ipc_log("  dbev_id = %d, cnt = %d\n", dbevindex, exp_ids.length);
+                    boolean[] res = dbeHasTLData(dbevindex, exp_ids, data_ids, eprop_ids, eprop_vals, auxs);
+                    req.writeArray(res);
+                }
+                case "getTLData" -> {
+                    int dbevindex = req.readInt();
+                    int exp_id = req.readInt();
+                    int data_id = req.readInt();
+                    int entity_prop_id = req.readInt();
+                    int entity_prop_val = req.readInt();
+                    int aux = req.readInt();
+                    long start_ts = req.readLong();
+                    long delta = req.readLong();
+                    int ndelta = req.readInt();
+                    boolean getRepresentatives = req.readBoolean();
+                    String[] chartProps = (String[]) req.readArray();
+                    ipc_log("  args = %d, %d, %d, %d, %d, %d, %d, %d, %d, %b\n", dbevindex, exp_id, data_id,
+                            entity_prop_id, entity_prop_val, aux, start_ts, delta, ndelta, getRepresentatives);
+                    Object[] res = dbeGetTLData(dbevindex, exp_id, data_id, entity_prop_id, entity_prop_val, aux,
+                            start_ts, delta, ndelta, getRepresentatives, chartProps);
+                    req.writeArray(res);
+                }
+                case "getTLEventCenterTime" -> {
+                    int dbevindex = req.readInt();
+                    int exp_id = req.readInt();
+                    int data_id = req.readInt();
+                    int entity_prop_id = req.readInt();
+                    int entity_prop_val = req.readInt();
+                    int aux = req.readInt();
+                    long event_id = req.readLong();
+                    long move_count = req.readLong();
+                    ipc_log("  args = %d, %d, %d, %d, %d, %d, %d, %d\n", dbevindex, exp_id, data_id,
+                            entity_prop_id, entity_prop_val, aux, event_id, move_count);
+                    long[] res = dbeGetTLEventCenterTime(dbevindex, exp_id, data_id, entity_prop_id,
+                            entity_prop_val, aux, event_id, move_count);
+                    req.writeArray(res);
+                }
+                case "getTLEventIdxNearTime" -> {
+                    int dbevindex = req.readInt();
+                    int exp_id = req.readInt();
+                    int data_id = req.readInt();
+                    int entity_prop_id = req.readInt();
+                    int entity_prop_val = req.readInt();
+                    int aux = req.readInt();
+                    int searchDirection = req.readInt();
+                    long tstamp = req.readLong();
+                    ipc_log("  args = %d, %d, %d, %d, %d, %d, %d, %d\n", dbevindex, exp_id, data_id,
+                            entity_prop_id, entity_prop_val, aux, searchDirection, tstamp);
+                    long res = dbeGetTLEventIdxNearTime(dbevindex, exp_id, data_id, entity_prop_id,
+                            entity_prop_val, aux, searchDirection, tstamp);
+                    req.writeLong(res);
+                }
+                case "getSamples" -> {
+                    int dbevindex = req.readInt();
+                    int exp_id = req.readInt();
+                    long lo_idx = req.readLong();
+                    long hi_idx = req.readLong();
+                    ipc_log("  dbevindex= %d, exp_id = %d, lo_idx:%d, hi_idx:%d\n", dbevindex, exp_id, lo_idx, hi_idx);
+                    Object[] res = dbeGetSamples(dbevindex, exp_id, lo_idx, hi_idx);
+                    req.writeArray(res);
+                }
+                case "getGCEvents" -> {
+                    int dbevindex = req.readInt();
+                    int exp_id = req.readInt();
+                    long lo_idx = req.readLong();
+                    long hi_idx = req.readLong();
+                    ipc_log("  dbevindex= %d, exp_id = %d, lo_idx:%d, hi_idx:%d\n", dbevindex, exp_id, lo_idx, hi_idx);
+                    Object[] res = dbeGetGCEvents(dbevindex, exp_id, lo_idx, hi_idx);
+                    req.writeArray(res);
+                }
+                case "getTLDetails" -> {
+                    int dbevindex = req.readInt();
+                    int exp_id = req.readInt();
+                    int data_id = req.readInt();
+                    int entity_prop_id = req.readInt();
+                    long event_id = req.readLong();
+                    ipc_log("  args = %d, %d, %d, %d, %d\n", dbevindex, exp_id, data_id,
+                            entity_prop_id, event_id);
+                    Object[] res = dbeGetTLDetails(dbevindex, exp_id, data_id, entity_prop_id, event_id);
+                    req.writeArray(res);
+                }
                 case "setNameFormat" -> {
                     int arg1 = req.readInt();
                     int arg2 = req.readInt();
@@ -295,6 +383,14 @@ public class ERIPC {
                     int arg1 = req.readInt();
                     ipc_log ("  args = %d\n", arg1);
                     Object[] res = dbeGetEntityProps(arg1);
+                    req.writeArray(res);
+                }
+                case "getEntitiesV2" -> {
+                    int arg1 = req.readInt();
+                    int[] arg2 = (int[]) req.readArray();
+                    int arg3 = req.readInt();
+                    ipc_log("  args = %d, %d, %d\n", arg1, arg2 == null ? -1 : arg2.length, arg3);
+                    Object[] res = dbeGetEntitiesV2(arg1, arg2, arg3);
                     req.writeArray(res);
                 }
                 case "getCurMetricsV2" -> {
@@ -419,6 +515,39 @@ public class ERIPC {
                     long arg3 = req.readLong();
                     ipc_log("  args = %d, %d, %d\n", arg1, arg2, arg3);
                     String[] res = dbeGetNames(arg1, arg2, arg3);
+                    req.writeArray(res);
+                }
+                case "getObject" -> {
+                    int arg1 = req.readInt();
+                    long arg2 = req.readLong();
+                    long arg3 = req.readLong();
+                    ipc_log("  args = %d, %d, %d\n", arg1, arg2, arg3);
+                    long res = dbeGetObject(arg1, arg2, arg3);
+                    req.writeLong(res);
+                }
+                case "getStackFunctions" -> {
+                    long arg1 = req.readLong();
+                    ipc_log("  args = %d\n", arg1);
+                    long[] res = dbeGetStackFunctions(0, arg1);
+                    req.writeArray(res);
+                }
+                case "getFuncNames" -> {
+                    int arg1 = req.readInt();
+                    long[] arg2 = (long[]) req.readArray();
+                    ipc_log("  arg1 = %d, argc = %d\n", arg1, arg2 == null ? 0 : arg2.length);
+                    String[] res = dbeGetFuncNames(arg1, arg2);
+                    req.writeArray(res);
+                }
+                case "getStacksFunctions" -> {
+                    long[] arg1 = (long[]) req.readArray();
+                    ipc_log("  argc = %d\n", arg1 == null ? 0 : arg1.length);
+                    Object[] res = dbeGetStacksFunctions(0, arg1);
+                    req.writeArray(res);
+                }
+                case "getCallTreeFuncs" -> {
+                    int arg1 = req.readInt();
+                    ipc_log("  args = %d\n", arg1);
+                    Object[] res = dbeGetCallTreeFuncs(arg1);
                     req.writeArray(res);
                 }
                 case "getFuncList" -> {

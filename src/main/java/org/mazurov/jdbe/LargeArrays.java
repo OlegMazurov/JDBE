@@ -19,8 +19,8 @@ import java.util.Arrays;
 
 public class LargeArrays {
 
-    private static final int CHUNK_SIZE = 1 << 26;
-    private static final int MAX_CHUNKS = 4096;
+    private static final int CHUNK_SIZE = 1 << 23;
+    private static final int MAX_CHUNKS = 1 << 12;
 
     static int chunkIdx(long idx) {
         return (int) (idx / CHUNK_SIZE);

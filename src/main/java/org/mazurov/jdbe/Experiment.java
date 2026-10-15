@@ -28,12 +28,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
+import java.util.*;
 
 import static org.mazurov.jdbe.Emsg.Cmsg_warn;
 import static org.mazurov.jdbe.Enums.*;
@@ -87,7 +82,80 @@ public class Experiment {
         long jthr_id; 
         long start;
         long end;
+
+        boolean is_system() {
+            return "system".equals(group_name);
+        }
     }
+
+    static class PrUsage {
+        long pr_tstamp, pr_create, pr_term, pr_rtime;
+        long pr_utime, pr_stime, pr_ttime, pr_tftime, pr_dftime, pr_kftime,
+                pr_ltime, pr_slptime, pr_wtime, pr_stoptime;
+        long pr_minf, pr_majf, pr_nswap, pr_inblk, pr_oublk,
+                pr_msnd, pr_mrcv, pr_sigs, pr_vctx, pr_ictx, pr_sysc, pr_ioch;
+
+        static PrUsage bind64(ByteBuffer buf, long off) {
+            PrUsage pu = new PrUsage();
+            pu.pr_tstamp = timestruc64(buf, off + 8);
+            pu.pr_create = timestruc64(buf, off + 24);
+            pu.pr_term = timestruc64(buf, off + 40);
+            pu.pr_rtime = timestruc64(buf, off + 56);
+            pu.pr_utime = timestruc64(buf, off + 72);
+            pu.pr_stime = timestruc64(buf, off + 88);
+            pu.pr_ttime = timestruc64(buf, off + 104);
+            pu.pr_tftime = timestruc64(buf, off + 120);
+            pu.pr_dftime = timestruc64(buf, off + 136);
+            pu.pr_kftime = timestruc64(buf, off + 152);
+            pu.pr_ltime = timestruc64(buf, off + 168);
+            pu.pr_slptime = timestruc64(buf, off + 184);
+            pu.pr_wtime = timestruc64(buf, off + 200);
+            pu.pr_stoptime = timestruc64(buf, off + 216);
+            // offset 232: filltime[6], 96 bytes -> next real field at 232+96=328
+            pu.pr_minf = buf.getLong((int) (off + 328));
+            pu.pr_majf = buf.getLong((int) (off + 336));
+            pu.pr_nswap = buf.getLong((int) (off + 344));
+            pu.pr_inblk = buf.getLong((int) (off + 352));
+            pu.pr_oublk = buf.getLong((int) (off + 360));
+            pu.pr_msnd = buf.getLong((int) (off + 368));
+            pu.pr_mrcv = buf.getLong((int) (off + 376));
+            pu.pr_sigs = buf.getLong((int) (off + 384));
+            pu.pr_vctx = buf.getLong((int) (off + 392));
+            pu.pr_ictx = buf.getLong((int) (off + 400));
+            pu.pr_sysc = buf.getLong((int) (off + 408));
+            pu.pr_ioch = buf.getLong((int) (off + 416));
+            return pu;
+        }
+
+        private static long timestruc64(ByteBuffer buf, long off) {
+            long sec = buf.getLong((int) off);
+            long nsec = buf.getLong((int) (off + 8));
+            return sec * NANOSEC + nsec;
+        }
+
+        long[] getMstateValues() {
+            return new long[] {
+                    pr_utime, pr_stime, pr_ttime, pr_tftime, pr_dftime,
+                    pr_kftime, pr_ltime, pr_slptime, pr_wtime, pr_stoptime
+            };
+        }
+    }
+
+    static class Sample {
+        final int number;
+        String start_label;
+        String end_label;
+        long start_time;
+        long end_time;
+        PrUsage prusage;
+
+        Sample(int number) {
+            this.number = number;
+        }
+    }
+
+    List<Sample> samples = new ArrayList<>();
+    String first_sample_label;
 
     static class Collection_params { // Experiment collection parameters
 
@@ -407,24 +475,162 @@ public class Experiment {
         }
         if (wsize != W64 || data.length < PRUSAGE64_SIZE)
             return; 
+        newDataDescriptor(DATA_SAMPLE);
         ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
         long nrecords = data.length / PRUSAGE64_SIZE;
-        long lastOff = (nrecords - 1) * (long) PRUSAGE64_SIZE;
-        long tvSec = u64(buf, lastOff + 8);
-        long tvNsec = u64(buf, lastOff + 16);
-        update_last_event(tvSec * NANOSEC + tvNsec);
+
+        PrUsage prev = null;
+        int sampleNumber = 1;
+        for (long rec = 0; rec < nrecords; rec++) {
+            long off = rec * (long) PRUSAGE64_SIZE;
+            PrUsage cur = PrUsage.bind64(buf, off);
+            if (prev == null) {
+                prev = cur;
+                continue; // skip the first record, matches native
+            }
+            Sample sample;
+            if (sampleNumber > samples.size()) {
+                sample = new Sample(sampleNumber);
+                sample.start_label = "<unknown>";
+                sample.end_label = "<unknown>";
+                samples.add(sample);
+            } else {
+                sample = samples.get(sampleNumber - 1);
+            }
+            sampleNumber++;
+            sample.start_time = prev.pr_tstamp + 1;
+            sample.end_time = cur.pr_tstamp;
+            prev.pr_rtime = cur.pr_rtime - prev.pr_rtime;
+            prev.pr_utime = cur.pr_utime - prev.pr_utime;
+            prev.pr_stime = cur.pr_stime - prev.pr_stime;
+            prev.pr_ttime = cur.pr_ttime - prev.pr_ttime;
+            prev.pr_tftime = cur.pr_tftime - prev.pr_tftime;
+            prev.pr_dftime = cur.pr_dftime - prev.pr_dftime;
+            prev.pr_kftime = cur.pr_kftime - prev.pr_kftime;
+            prev.pr_ltime = cur.pr_ltime - prev.pr_ltime;
+            prev.pr_slptime = cur.pr_slptime - prev.pr_slptime;
+            prev.pr_wtime = cur.pr_wtime - prev.pr_wtime;
+            prev.pr_stoptime = cur.pr_stoptime - prev.pr_stoptime;
+            prev.pr_minf = cur.pr_minf - prev.pr_minf;
+            prev.pr_majf = cur.pr_majf - prev.pr_majf;
+            prev.pr_nswap = cur.pr_nswap - prev.pr_nswap;
+            prev.pr_inblk = cur.pr_inblk - prev.pr_inblk;
+            prev.pr_oublk = cur.pr_oublk - prev.pr_oublk;
+            prev.pr_msnd = cur.pr_msnd - prev.pr_msnd;
+            prev.pr_mrcv = cur.pr_mrcv - prev.pr_mrcv;
+            prev.pr_sigs = cur.pr_sigs - prev.pr_sigs;
+            prev.pr_vctx = cur.pr_vctx - prev.pr_vctx;
+            prev.pr_ictx = cur.pr_ictx - prev.pr_ictx;
+            prev.pr_sysc = cur.pr_sysc - prev.pr_sysc;
+            prev.pr_ioch = cur.pr_ioch - prev.pr_ioch;
+            sample.prusage = prev;
+            prev = cur;
+        }
+
+        while (samples.size() >= sampleNumber)
+            samples.remove(samples.size() - 1);
+
+        if (prev != null)
+            update_last_event(prev.pr_tstamp);
+    }
+
+    private void build_sample_events() {
+        DataDescriptor dDscr = getDataDescriptor(DATA_SAMPLE);
+        if (dDscr == null)
+            return;
+
+        PropDescr prop = new PropDescr(Prop_type.PROP_SMPLOBJ, "SMPLOBJ");
+        prop.vtype = VType_type.TYPE_OBJ;
+        dDscr.addProperty(prop);
+
+        prop = new PropDescr(Prop_type.PROP_TSTAMP, "TSTAMP");
+        prop.uname = "High resolution timestamp";
+        prop.vtype = VType_type.TYPE_UINT64;
+        dDscr.addProperty(prop);
+
+        prop = new PropDescr(Prop_type.PROP_SAMPLE, "SAMPLE");
+        prop.uname = "Sample number";
+        prop.vtype = VType_type.TYPE_UINT64;
+        dDscr.addProperty(prop);
+
+        prop = new PropDescr(Prop_type.PROP_EVT_TIME, "EVT_TIME");
+        prop.uname = "Event duration";
+        prop.vtype = VType_type.TYPE_UINT64;
+        dDscr.addProperty(prop);
+
+        for (Sample sample : samples) {
+            long recn = dDscr.addRecord();
+            dDscr.setObjValue(Prop_type.PROP_SMPLOBJ.ordinal(), recn, sample);
+            dDscr.setValue(Prop_type.PROP_SAMPLE.ordinal(), recn, sample.number);
+            dDscr.setValue(Prop_type.PROP_TSTAMP.ordinal(), recn, sample.end_time);
+            dDscr.setValue(Prop_type.PROP_EVT_TIME.ordinal(), recn, sample.end_time - sample.start_time);
+        }
+    }
+
+    private void build_gc_events() {
+        DataDescriptor dDscr = getDataDescriptor(DATA_GCEVENT);
+        if (dDscr == null)
+            return;
+
+        PropDescr prop = new PropDescr(Prop_type.PROP_GCEVENTOBJ, "GCEVENTOBJ");
+        prop.vtype = VType_type.TYPE_OBJ;
+        dDscr.addProperty(prop);
+
+        prop = new PropDescr(Prop_type.PROP_TSTAMP, "TSTAMP");
+        prop.uname = "High resolution timestamp";
+        prop.vtype = VType_type.TYPE_UINT64;
+        dDscr.addProperty(prop);
+
+        prop = new PropDescr(Prop_type.PROP_GCEVENT, "GCEVENT");
+        prop.uname = "GCEvent number";
+        prop.vtype = VType_type.TYPE_UINT64;
+        dDscr.addProperty(prop);
+
+        prop = new PropDescr(Prop_type.PROP_EVT_TIME, "EVT_TIME");
+        prop.uname = "Event duration";
+        prop.vtype = VType_type.TYPE_UINT64;
+        dDscr.addProperty(prop);
+
+        for (GCEvent gcevent : gcevents) {
+            long recn = dDscr.addRecord();
+            dDscr.setObjValue(Prop_type.PROP_GCEVENTOBJ.ordinal(), recn, gcevent);
+            dDscr.setValue(Prop_type.PROP_GCEVENT.ordinal(), recn, gcevent.id);
+            dDscr.setValue(Prop_type.PROP_TSTAMP.ordinal(), recn, gcevent.end);
+            dDscr.setValue(Prop_type.PROP_EVT_TIME.ordinal(), recn, gcevent.end - gcevent.start);
+        }
     }
 
     private void compute_heap_leaked(DataDescriptor dDscr) {
         PropDescr hleakedProp = new PropDescr(Prop_type.PROP_HLEAKED, "HLEAKED");
+        hleakedProp.uname = "Bytes Leaked";
         hleakedProp.vtype = VType_type.TYPE_UINT64;
         dDscr.addProperty(hleakedProp);
+
+        PropDescr ddscrLnkProp = new PropDescr(Prop_type.PROP_DDSCR_LNK, "DDSCR_LNK");
+        ddscrLnkProp.vtype = VType_type.TYPE_INT64;
+        dDscr.addProperty(ddscrLnkProp);
+
+        PropDescr hcurAllocsProp = new PropDescr(Prop_type.PROP_HCUR_ALLOCS, "HCUR_ALLOCS");
+        hcurAllocsProp.uname = "Net Bytes Allocated";
+        hcurAllocsProp.vtype = VType_type.TYPE_INT64;
+        dDscr.addProperty(hcurAllocsProp);
+
+        PropDescr hcurLeaksProp = new PropDescr(Prop_type.PROP_HCUR_LEAKS, "HCUR_LEAKS");
+        hcurLeaksProp.uname = "Net Bytes Leaked";
+        hcurLeaksProp.vtype = VType_type.TYPE_UINT64;
+        dDscr.addProperty(hcurLeaksProp);
+
+        PropDescr hcurNetAllocProp = new PropDescr(Prop_type.PROP_HCUR_NET_ALLOC, "HCUR_NET_ALLOC");
+        hcurNetAllocProp.vtype = VType_type.TYPE_INT64;
+        //TODO: hcurNetAllocProp.flags = DDFLAG_NOSHOW;
+        dDscr.addProperty(hcurNetAllocProp);
 
         int htypeOrd = Prop_type.PROP_HTYPE.ordinal();
         int hsizeOrd = Prop_type.PROP_HSIZE.ordinal();
         int hvaddrOrd = Prop_type.PROP_HVADDR.ordinal();
         int hovaddrOrd = Prop_type.PROP_HOVADDR.ordinal();
         int hleakedOrd = Prop_type.PROP_HLEAKED.ordinal();
+        int ddscrLnkOrd = Prop_type.PROP_DDSCR_LNK.ordinal();
         int tstampOrd = Prop_type.PROP_TSTAMP.ordinal();
 
         int size = (int) dDscr.getSize();
@@ -446,13 +652,17 @@ public class Experiment {
                 if (htype == Heap_type.REALLOC_TRACE.value) {
                     long ovaddr = dDscr.getLongValue(hovaddrOrd, i);
                     Integer oldIdx = ovaddr != 0 ? addrToAllocIdx.remove(ovaddr) : null;
-                    if (oldIdx != null)
+                    if (oldIdx != null) {
                         dDscr.setValue(hleakedOrd, oldIdx, 0);
+                        dDscr.setValue(ddscrLnkOrd, oldIdx, i + 1);
+                    }
                 }
             } else if (htype == Heap_type.FREE_TRACE.value || htype == Heap_type.MUNMAP_TRACE.value) {
                 Integer allocIdx = vaddr != 0 ? addrToAllocIdx.remove(vaddr) : null;
-                if (allocIdx != null)
+                if (allocIdx != null) {
                     dDscr.setValue(hleakedOrd, allocIdx, 0);
+                    dDscr.setValue(ddscrLnkOrd, allocIdx, i + 1);
+                }
             }
         }
     }
@@ -684,6 +894,10 @@ public class Experiment {
         return exp_start_time;
     }
 
+    // Mirrors native's Experiment::getRelativeStartTime (Experiment.cc:2989-2999):
+    // delta between this experiment's start and its founder's start, for fork/exec
+    // descendant-process chains. This port has no founder/descendant tracking (every
+    // experiment is its own founder), so the delta is always 0.
     public long getRelativeStartTime() {
         return 0;
     }
@@ -788,8 +1002,17 @@ public class Experiment {
         return f;
     }
 
-    void process_sample_cmd(String cmd, long ts, int id, String label) {
-        throw new RuntimeException("Experiment.process_sample_cmd not implemented");
+    void process_sample_cmd(String cmd, long ts, int sample_number, String label) {
+        if (sample_number == 0) {
+            first_sample_label = label;
+            return;
+        }
+        Sample prev_sample = samples.isEmpty() ? null : samples.get(samples.size() - 1);
+        String start_label = prev_sample != null ? prev_sample.end_label : first_sample_label;
+        Sample sample = new Sample(sample_number);
+        sample.start_label = start_label;
+        sample.end_label = label;
+        samples.add(sample);
     }
 
     void process_desc_start_cmd(String cmd, long ts, String variant, String lineage, int follow, String msg) {
@@ -1015,7 +1238,7 @@ public class Experiment {
         return jm;
     }
 
-    private static final JThread JTHREAD_NONE = new JThread();
+    static final JThread JTHREAD_NONE = new JThread();
 
     private JThread map_pckt_to_Jthread(long tid, long ts) {
         if (!has_java)
@@ -1024,6 +1247,21 @@ public class Experiment {
             if (jt.tid == tid && ts >= jt.start && ts < jt.end)
                 return jt;
         return JTHREAD_NONE;
+    }
+
+    JThread get_jthread(long tid) {
+        if (!has_java)
+            return null; 
+        JThread best = null;
+        for (JThread jt : jthreads) {
+            if (jt.tid != tid)
+                continue;
+            if (best == null)
+                best = jt;
+            else if (!jt.is_system() && jt.jthr_id < best.jthr_id)
+                best = jt;
+        }
+        return best == null ? JTHREAD_NONE : best;
     }
 
     record ThreadName(String name, boolean isFinal) {}
@@ -1082,6 +1320,34 @@ public class Experiment {
             return nativeStack;
 
         return List.of(unknown);
+    }
+
+    private Map<Long, long[]> frinfoFirstSeen;
+
+    private void ensureFrinfoFirstSeen() {
+        if (frinfoFirstSeen != null)
+            return;
+        frinfoFirstSeen = new HashMap<>();
+        int frinfoOrd = Prop_type.PROP_FRINFO.ordinal();
+        int thridOrd = Prop_type.PROP_THRID.ordinal();
+        int tstampOrd = Prop_type.PROP_TSTAMP.ordinal();
+        for (ProfData_type dt : new ProfData_type[] {DATA_CLOCK, DATA_HEAP}) {
+            DataDescriptor d = getDataDescriptor(dt);
+            if (d == null)
+                continue;
+            long n = d.getSize();
+            for (long i = 0; i < n; i++) {
+                long frinfo = d.getLongValue(frinfoOrd, i);
+                frinfoFirstSeen.putIfAbsent(frinfo,
+                        new long[] {d.getIntValue(thridOrd, i), d.getLongValue(tstampOrd, i)});
+            }
+        }
+    }
+
+    List<Function> resolveStackById(long frinfo) {
+        ensureFrinfoFirstSeen();
+        long[] ctx = frinfoFirstSeen.get(frinfo);
+        return ctx == null ? null : resolveStack(frinfo, ctx[0], ctx[1]);
     }
 
     private boolean checkSegOverlap(SegMem smem) {
@@ -1401,6 +1667,7 @@ public class Experiment {
 
     protected Exp_status open_epilogue() {
         post_process();
+        build_gc_events();
         if (last_event != ZERO_TIME) { // if last_event is known
             long ts = last_event - exp_start_time;
             String msg = String.format("Experiment Ended: %d.%09d%nData Collection Duration: %d.%09d",
@@ -1460,6 +1727,7 @@ public class Experiment {
         read_java_classes_file();
         read_map_file();
         read_overview_file();
+        build_sample_events();
         read_frameinfo_file();
         read_profile_file();
         read_heaptrace_file();
@@ -1724,6 +1992,7 @@ public class Experiment {
         int mec;
 
         ExperimentHandler() {
+            exp = Experiment.this;
             stack = new ArrayList<>();
             pushElem(Element.EL_NONE);
             dynfuncModule = null;
@@ -1736,30 +2005,36 @@ public class Experiment {
             mec = -1;
         }
 
+        private static final String[] HEAPTYPE_STATE_STRINGS =
+                {"MALLOC", "FREE", "REALLOC", "MMAP", "MUNMAP"};
+        private static final String[] HEAPTYPE_STATE_USTRINGS =
+                {"malloc", "free", "realloc", "mmap", "munmap"};
+
+        private static final String[] IOTRACETYPE_STATE_STRINGS = {
+                "READ", "WRITE", "OPEN", "CLOSE", "OTHERIO",
+                "READERROR", "WRITEERROR", "OPENERROR", "CLOSEERROR", "OTHERIOERROR"};
+        private static final String[] IOTRACETYPE_STATE_USTRINGS = {
+                "Read", "Write", "Open", "Close", "Other I/O",
+                "Read Error", "Write Error", "Open Error", "Close Error", "Other I/O Error"};
+
         @Override
         public void endDocument() {
-            // SP_TAG_STATE should be used to describe states, but it isn't
-            // let's do it here:
-//            DataDescriptor dd = exp.getDataDescriptor(DATA_HEAP);
-//            if (dd != null) {
-//                PropDescr prop = dd.getProp(PROP_HTYPE);
-//                if (prop != null) {
-//                    char * stateNames [HEAPTYPE_LAST] = HEAPTYPE_STATE_STRINGS;
-//                    char * stateUNames[HEAPTYPE_LAST] = HEAPTYPE_STATE_USTRINGS;
-//                    for (int ii = 0; ii < HEAPTYPE_LAST; ii++)
-//                        prop.addState(ii, stateNames[ii], stateUNames[ii]);
-//                }
-//            }
-//            dd = exp.getDataDescriptor(DATA_IOTRACE);
-//            if (dd != null) {
-//                PropDescr prop = dd.getProp(PROP_IOTYPE);
-//                if (prop != null) {
-//                    char * stateNames [IOTRACETYPE_LAST] = IOTRACETYPE_STATE_STRINGS;
-//                    char * stateUNames[IOTRACETYPE_LAST] = IOTRACETYPE_STATE_USTRINGS;
-//                    for (int ii = 0; ii < IOTRACETYPE_LAST; ii++)
-//                        prop.addState (ii, stateNames[ii], stateUNames[ii]);
-//                }
-//            }
+            DataDescriptor dd = exp.getDataDescriptor(DATA_HEAP);
+            if (dd != null) {
+                PropDescr prop = dd.getProp(Prop_type.PROP_HTYPE);
+                if (prop != null) {
+                    for (int ii = 0; ii < HEAPTYPE_STATE_STRINGS.length; ii++)
+                        prop.addState(ii, HEAPTYPE_STATE_STRINGS[ii], HEAPTYPE_STATE_USTRINGS[ii]);
+                }
+            }
+            dd = exp.getDataDescriptor(DATA_IOTRACE);
+            if (dd != null) {
+                PropDescr prop = dd.getProp(Prop_type.PROP_IOTYPE);
+                if (prop != null) {
+                    for (int ii = 0; ii < IOTRACETYPE_STATE_STRINGS.length; ii++)
+                        prop.addState(ii, IOTRACETYPE_STATE_STRINGS[ii], IOTRACETYPE_STATE_USTRINGS[ii]);
+                }
+            }
         }
 
         private static final String SP_TAG_COLLECTOR =       "collector";
@@ -2721,14 +2996,99 @@ public class Experiment {
 
     public List<DataDescriptor> getDataDescriptors() {
         List<DataDescriptor> list = new ArrayList<>();
-        for (DataDescriptor d : dataDscrs)
+        for (int i = 0; i < dataDscrs.length; i++) {
+            DataDescriptor d = get_raw_events(i);
             if (d != null)
                 list.add(d);
+        }
         return list;
     }
 
     public DataDescriptor get_raw_events(int data_id) {
+        if (data_id == DATA_HEAPSZ.getValue())
+            return get_heapsz_events();
         return data_id >= 0 && data_id < dataDscrs.length ? dataDscrs[data_id] : null;
+    }
+
+    public int base_data_id(int data_id) {
+        if (data_id == DATA_HEAPSZ.getValue()) {
+            return DATA_HEAP.getValue(); // DATA_HEAPSZ DataView is based on DATA_HEAP's DataView
+        }
+        return data_id;
+    }
+
+    DataView create_derived_data_view (int data_id, DataView dview) {
+        // dview contains filtered packets
+        if (data_id == DATA_HEAPSZ.getValue()) {
+            return create_heapsz_data_view(dview);
+        }
+        return null;
+    }
+
+    DataDescriptor get_heapsz_events() {
+        DataDescriptor dDscr = getDataDescriptor(DATA_HEAPSZ);
+        if (dDscr != null)
+            return dDscr;
+        DataDescriptor heapDDscr = getDataDescriptor(DATA_HEAP);
+        if (heapDDscr == null)
+            return null;
+        return newDataDescriptor(DATA_HEAPSZ, 0, heapDDscr);
+    }
+
+    private void update_heapsz_packet(Set<Long> touched, DataView dview, long alloc_pkt_id,
+                                       long net_alloc, long leaks) {
+        boolean newToSet = touched.add(alloc_pkt_id);
+        if (!newToSet) {
+            net_alloc += dview.getDataDescriptorValue(Prop_type.PROP_HCUR_NET_ALLOC.ordinal(), alloc_pkt_id);
+            if (leaks != 0) {
+                long old = dview.getDataDescriptorValue(Prop_type.PROP_HCUR_LEAKS.ordinal(), alloc_pkt_id);
+                if (old != 0)
+                    leaks = old;
+            }
+        }
+        dview.setDataDescriptorValue(Prop_type.PROP_HCUR_NET_ALLOC.ordinal(), alloc_pkt_id, net_alloc);
+        dview.setDataDescriptorValue(Prop_type.PROP_HCUR_LEAKS.ordinal(), alloc_pkt_id, leaks);
+    }
+
+    DataView create_heapsz_data_view(DataView heap_dview) {
+        DataDescriptor dDscr = get_heapsz_events();
+        if (dDscr == null)
+            return null;
+        Set<Long> touched = new LinkedHashSet<>();
+        long sz = heap_dview.getSize();
+        for (long i = 0; i < sz; i++) {
+            long hsize = heap_dview.getULongValue(Prop_type.PROP_HSIZE.ordinal(), i);
+            long leaks = heap_dview.getULongValue(Prop_type.PROP_HLEAKED.ordinal(), i);
+            long alloc_pkt_id = heap_dview.getIdByIdx(i);
+            update_heapsz_packet(touched, heap_dview, alloc_pkt_id, hsize, leaks);
+
+            long free_pkt_id = heap_dview.getLongValue(Prop_type.PROP_DDSCR_LNK.ordinal(), i) - 1;
+            if (free_pkt_id >= 0)
+                update_heapsz_packet(touched, heap_dview, free_pkt_id, -hsize, 0);
+        }
+
+        DataView heapsz_dview = dDscr.createExtManagedView();
+        for (long ddscr_pkt_id : touched)
+            heapsz_dview.appendDataDescriptorId(ddscr_pkt_id);
+        compute_heapsz_data_view(heapsz_dview);
+        return heapsz_dview;
+    }
+
+    private void compute_heapsz_data_view(DataView heapsz_dview) {
+        heapsz_dview.sort(new int[] {Prop_type.PROP_TSTAMP.ordinal()}, 1);
+        long currentAllocs = 0, currentLeaks = 0;
+        long sz = heapsz_dview.getSize();
+        for (long i = 0; i < sz; i++) {
+            long netAlloc = heapsz_dview.getLongValue(Prop_type.PROP_HCUR_NET_ALLOC.ordinal(), i);
+            currentAllocs += netAlloc;
+            heapsz_dview.setDataDescriptorValue(Prop_type.PROP_HCUR_ALLOCS.ordinal(),
+                    heapsz_dview.getIdByIdx(i), currentAllocs);
+
+            long leaks = heapsz_dview.getULongValue(Prop_type.PROP_HCUR_LEAKS.ordinal(), i);
+            currentLeaks += leaks;
+            heapsz_dview.setDataDescriptorValue(Prop_type.PROP_HCUR_LEAKS.ordinal(),
+                    heapsz_dview.getIdByIdx(i), currentLeaks);
+        }
     }
 
     DataDescriptor newDataDescriptor(ProfData_type type) {

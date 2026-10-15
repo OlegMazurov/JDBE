@@ -16,10 +16,7 @@ along with this program. If not, see <http://www.gnu.org/licenses>. */
 package org.mazurov.jdbe;
 
 import java.io.PrintStream;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 import static org.mazurov.jdbe.Enums.*;
 
@@ -46,11 +43,26 @@ public class DbeView {
     }
 
     ArrayList<FilterSet> filters;
-    int vindex;       // index of this view -- set by Analyzer
+    int vindex; // index of this view -- set by Analyzer
     boolean func_scope;
+    boolean filter_active; // true if filtering is active, i.e., some packets were dropped
     int phaseIdx;
+    List<DataView[]> dataViews = new ArrayList<>();
     Settings settings;
     String cur_filter_str;
+
+    private boolean showAll = true;
+    private boolean showHideChanged;
+    private boolean newViewMode;
+
+    public boolean isShowAll() { return showAll; }
+    public boolean isShowHideChanged() { return showHideChanged; }
+    public boolean isNewViewMode() { return newViewMode; }
+    public void resetShowHideChanged() { showHideChanged = false; }
+    public void resetNewViewMode() { newViewMode = false; }
+
+    public void resetAndConstructShowHideStacks() {
+    }
 
     List<BaseMetric> reg_metrics = new ArrayList<>();   // list of registered metrics
     private final Map<MetricType, MetricList> metrics_lists = new HashMap<>();
@@ -294,7 +306,25 @@ public class DbeView {
         while (filters.size() <= index)
             filters.add(null);
         filters.set(index, filterset);
+
+        assert index == dataViews.size();
+        DataView[] expDataViewList = new DataView[ProfData_type.DATA_LAST.getValue()];
+        while (dataViews.size() <= index) {
+            dataViews.add(null);
+        }
+        dataViews.set(index, expDataViewList);
+
         reset_metrics();
+    }
+
+    public void drop_experiment(int index) {
+        phaseIdx++;
+        filters.remove(index);
+
+        // reset any cached data
+        reset_data(true);
+
+        dataViews.remove(index);
     }
 
     void set_exp_enable(int n, boolean e) {
@@ -467,13 +497,7 @@ public class DbeView {
 //        prev_filter_str = null;
 //        cur_filter_expr = null;
 //        noParFilter = false;
-//        for (int exp_id = 0; exp_id < dataViews->size (); ++exp_id)
-//        {
-//            Vector<DataView*> *expDataViewList = dataViews->fetch (exp_id);
-//            if (expDataViewList)
-//                expDataViewList->destroy ();
-//        }
-//        dataViews->destroy ();
+        dataViews.clear();
         reset_metrics();
 
         // now reset any cached data
@@ -693,18 +717,22 @@ public class DbeView {
         else
             lst = n > filters.size() ? filters.size() : n + 1;
         for (int i = n == -1 ? 0 : n; i < lst; i++) {
-//            List<DataView> expDataViewList = dataViews.fetch(i);
-//            if (expDataViewList) {
-//                // clear out all the data_ids, but don't change the vector size
-//                for (int data_id = 0; data_id < expDataViewList.size(); ++data_id) {
-//                    expDataViewList.store(data_id, null);
-//                }
-//            }
+            DataView[] expDataViewList = dataViews.get(i);
+            if (expDataViewList != null) {
+                // clear out all the data_ids, but don't change the vector size
+                Arrays.fill(expDataViewList, null);
+            }
         }
-//        filter_active = false;
+        filter_active = false;
     }
 
     private PathTree mainPathTree;
+
+    public PathTree get_path_tree() {
+        if (mainPathTree == null)
+            mainPathTree = new PathTree(this);
+        return mainPathTree;
+    }
 
     Hist_data func_data;
     String error_msg;
@@ -723,11 +751,80 @@ public class DbeView {
         }
         if (type != Histable.Type.FUNCTION)
             throw new RuntimeException("DbeView.get_hist_data: only Histable.Type.FUNCTION/INDEXOBJ is implemented");
-        if (mainPathTree == null)
-            mainPathTree = new PathTree(this);
-        Hist_data hist_data = mainPathTree.compute_metrics(mlist, type, mode, hobjs);
+        Hist_data hist_data = get_path_tree().compute_metrics(mlist, type, mode, hobjs);
         hist_data.resort(mlist);
         return hist_data;
+    }
+
+    public DataView get_filtered_events (int idx, int data_id) {
+        if (idx < 0 || idx >= dataViews.size())
+            return null;
+        DataView[] expDataViewList = dataViews.get(idx);
+        if (expDataViewList == null) {
+            return null;
+        }
+
+        DataView dview = expDataViewList[data_id];
+        Experiment exp = DbeSession.getInstance().get_exp(idx);
+        if (dview != null) {
+            // if show-hide is on force a reconstruction of hide stacks
+            // LIBRARY_VISIBILITY
+//            if (!showAll && (showHideChanged || newViewMode)) {
+//                DataDescriptor dDscr = exp.get_raw_events(data_id);
+//                constructShowHideStack(dDscr, exp);
+//            }
+            return dview;
+        }
+
+        int orig_data_id = data_id;
+        data_id = exp.base_data_id(data_id);
+        if (orig_data_id != data_id) {
+            // orig_data_id is a derived DataView.  Get the master DataView:
+            dview = expDataViewList[data_id];
+        }
+        if (dview == null) {
+//            Expression saved = cur_filter_expr;
+//            if (!adjust_filter(exp))
+//                return null;
+
+            DataDescriptor dDscr = exp.get_raw_events(data_id);
+//            if (!showAll && (showHideChanged || newViewMode)) {
+//                constructShowHideStack(dDscr, exp);
+//            }
+
+            Emsg m = exp.fetch_warnings();
+            if (m != null) {
+                warning_msg = m.get_msg();
+            }
+
+            if (dDscr != null) {
+//                FilterExp filter = get_FilterExp(exp);
+                dview = dDscr.createView();
+//                dview.setFilter(filter);
+                if (dview.getSize() < dDscr.getSize()) {
+                    filter_active = true;
+                }
+            }
+            expDataViewList[data_id] = dview;
+
+//            if (saved != null) {
+//                cur_filter_expr = saved;
+//            }
+        }
+        if (orig_data_id != data_id) {
+            // create the derived DataView:
+            dview = exp.create_derived_data_view(orig_data_id, dview);
+            expDataViewList[orig_data_id] = dview;
+        }
+        return dview;
+    }
+
+    public DataView get_filtered_events (int idx, int data_id, int sortprops[], int sortprop_count) {
+        DataView packets = get_filtered_events (idx, data_id);
+        if (packets != null) {
+            packets.sort(sortprops, sortprop_count);
+        }
+        return packets;
     }
 
     public void dump_profile(PrintStream out) {

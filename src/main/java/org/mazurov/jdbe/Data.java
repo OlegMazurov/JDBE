@@ -19,7 +19,7 @@ import static org.mazurov.jdbe.Enums.VType_type;
 
 public abstract class Data {
 
-    static class Datum {
+    public static class Datum {
         VType_type type;
         int i;      // INT32/UINT32
         long l;     // INT64/UINT64
@@ -28,7 +28,7 @@ public abstract class Data {
         Object obj; // OBJ
     }
 
-    static Data newData(VType_type vtype) {
+    public static Data newData(VType_type vtype) {
         switch (vtype) {
             case TYPE_INT32:
             case TYPE_UINT32:

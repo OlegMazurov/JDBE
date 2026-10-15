@@ -170,7 +170,7 @@ public class Enums {
     }
 
     public static String get_prof_data_type_name(ProfData_type t) {
-        return t.toString();
+        return "PROFDATA_TYPE_" + t.toString().substring("DATA_".length());
     }
 
     public static String get_prof_data_type_uname(ProfData_type t) {
@@ -510,5 +510,13 @@ public class Enums {
         Heap_type(int value) {
             this.value = value;
         }
+    }
+
+    public enum Relation {
+        REL_LT,
+        REL_LTEQ,
+        REL_EQ,
+        REL_GTEQ,
+        REL_GT
     }
 }
