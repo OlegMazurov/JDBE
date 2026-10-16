@@ -1128,6 +1128,81 @@ public class DBE {
         return new Object[] { funcIds, funcNames, funcIds };
     }
 
+    public static int dbeGetCallTreeNumLevels(int dbevindex) {
+        DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+        return dbev.get_path_tree().get_ftree_depth();
+    }
+
+    public static Object[] dbeGetCallTreeLevel(int dbevindex, String mcmd, int level) {
+        DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+        if (mcmd == null)
+            return null;
+        BaseMetric bm = DbeSession.getInstance().find_base_reg_metric(mcmd);
+        if (bm == null)
+            return null;
+        return dbev.get_path_tree().get_ftree_level(bm, level);
+    }
+
+    public static Object[] dbeGetCallTreeLevels(int dbevindex, String mcmd) {
+        DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+        if (mcmd == null)
+            return null;
+        BaseMetric bm = DbeSession.getInstance().find_base_reg_metric(mcmd);
+        if (bm == null)
+            return null;
+        PathTree ptree = dbev.get_path_tree();
+        int depth = ptree.get_ftree_depth();
+        Object[] results = new Object[depth];
+        for (int i = 0; i < depth; i++)
+            results[i] = ptree.get_ftree_level(bm, i);
+        return results;
+    }
+
+    public static Object[] dbeGetCallTreeLevelFuncs(int dbevindex, int startLevel, int endLevel) {
+        DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+        PathTree ptree = dbev.get_path_tree();
+        int depth = ptree.get_ftree_depth();
+        if (startLevel < 0)
+            startLevel = 0;
+        if (endLevel < 0 || endLevel >= depth)
+            endLevel = depth - 1;
+        if (startLevel == 0 && endLevel == depth - 1)
+            return dbeGetCallTreeFuncs(dbevindex);
+
+        List<Long> funcIds = new ArrayList<>();
+        List<String> funcNames = new ArrayList<>();
+        for (int level = startLevel; level <= endLevel; level++) {
+            Object[] info = ptree.get_ftree_level(null, level);
+            if (info == null)
+                continue;
+            long[] ids = (long[]) info[2];
+            for (long fid : ids) {
+                funcIds.add(fid);
+                Histable obj = DbeSession.getInstance().findObjectById(fid);
+                funcNames.add(obj != null ? obj.get_name() : null);
+            }
+        }
+        long[] funcIdArr = funcIds.stream().mapToLong(Long::longValue).toArray();
+        String[] funcNameArr = funcNames.toArray(new String[0]);
+        return new Object[] { funcIdArr, funcNameArr, funcIdArr };
+    }
+
+    public static Object[] dbeGetCallTreeChildren(int dbevindex, String mcmd, int[] nodeIdxs) {
+        if (nodeIdxs == null || nodeIdxs.length == 0)
+            return null;
+        DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+        if (mcmd == null)
+            return null;
+        BaseMetric bm = DbeSession.getInstance().find_base_reg_metric(mcmd);
+        if (bm == null)
+            return null;
+        PathTree ptree = dbev.get_path_tree();
+        Object[] results = new Object[nodeIdxs.length];
+        for (int i = 0; i < nodeIdxs.length; i++)
+            results[i] = ptree.get_ftree_node_children(bm, nodeIdxs[i]);
+        return results;
+    }
+
     public static Object[] dbeGetFuncList(int dbevindex, int type, int subtype) {
         DbeView dbev = DbeSession.getInstance().getView(dbevindex);
         Hist_data data = (type == FuncListDisp_type.DSP_FUNCTION.value) ? dbev.func_data : null;

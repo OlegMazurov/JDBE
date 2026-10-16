@@ -550,6 +550,43 @@ public class ERIPC {
                     Object[] res = dbeGetCallTreeFuncs(arg1);
                     req.writeArray(res);
                 }
+                case "getCallTreeNumLevels" -> {
+                    int arg1 = req.readInt();
+                    ipc_log("  args = %d\n", arg1);
+                    int res = dbeGetCallTreeNumLevels(arg1);
+                    req.writeInt(res);
+                }
+                case "getCallTreeLevel" -> {
+                    int arg1 = req.readInt();
+                    String arg2 = req.readString();
+                    int arg3 = req.readInt();
+                    ipc_log("  args = %d, %s, %d\n", arg1, arg2, arg3);
+                    Object[] res = dbeGetCallTreeLevel(arg1, arg2, arg3);
+                    req.writeArray(res);
+                }
+                case "getCallTreeChildren" -> {
+                    int arg1 = req.readInt();
+                    String arg2 = req.readString();
+                    int[] arg3 = (int[]) req.readArray();
+                    ipc_log("  args = %d, %s, argc = %d\n", arg1, arg2, arg3 == null ? 0 : arg3.length);
+                    Object[] res = dbeGetCallTreeChildren(arg1, arg2, arg3);
+                    req.writeArray(res);
+                }
+                case "getCallTreeLevels" -> {
+                    int arg1 = req.readInt();
+                    String arg2 = req.readString();
+                    ipc_log("  args = %d, %s\n", arg1, arg2);
+                    Object[] res = dbeGetCallTreeLevels(arg1, arg2);
+                    req.writeArray(res);
+                }
+                case "getCallTreeLevelFuncs" -> {
+                    int arg1 = req.readInt();
+                    int arg2 = req.readInt();
+                    int arg3 = req.readInt();
+                    ipc_log("  args = %d, %d, %d\n", arg1, arg2, arg3);
+                    Object[] res = dbeGetCallTreeLevelFuncs(arg1, arg2, arg3);
+                    req.writeArray(res);
+                }
                 case "getFuncList" -> {
                     int arg1 = req.readInt();
                     int arg2 = req.readInt();

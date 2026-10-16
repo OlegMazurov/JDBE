@@ -36,6 +36,7 @@ public class PathTree {
         long[] exclVals = new long[NSLOTS]; 
         long[] inclVals = new long[NSLOTS]; 
         FNode funclistNext; 
+        int idx; 
     }
 
     private final FNode root = new FNode();
@@ -332,6 +333,84 @@ public class PathTree {
     List<Function> get_funcs() {
         ensureBuilt();
         return new ArrayList<>(fnMap.keySet());
+    }
+
+    private boolean flameIndexed;
+    private final List<FNode> nodesByIdx = new ArrayList<>(); 
+    private final List<List<FNode>> levels = new ArrayList<>(); 
+
+    private void ensureFlameIndexed() {
+        if (flameIndexed)
+            return;
+        ensureBuilt();
+        flameIndexed = true;
+        nodesByIdx.add(null);
+        List<FNode> level = new ArrayList<>();
+        level.add(root);
+        while (!level.isEmpty()) {
+            List<FNode> next = new ArrayList<>();
+            for (FNode n : level) {
+                n.idx = nodesByIdx.size();
+                nodesByIdx.add(n);
+                next.addAll(n.children.values());
+            }
+            levels.add(level);
+            level = next;
+        }
+    }
+
+    int get_ftree_depth() {
+        ensureFlameIndexed();
+        return levels.size();
+    }
+
+    private Object[] get_nodes(BaseMetric bm, List<FNode> nodes) {
+        int n = nodes.size();
+        int[] nodeIdx = new int[n];
+        int[] ancestorIdx = new int[n];
+        long[] funcId = new long[n];
+        Slot slot = bm == null ? null : slotFor(bm.get_type());
+        for (int i = 0; i < n; i++) {
+            FNode node = nodes.get(i);
+            nodeIdx[i] = node.idx;
+            ancestorIdx[i] = node.parent == null ? 0 : node.parent.idx;
+            funcId[i] = node.func.id;
+        }
+        Object metricVals = slot == null ? null : metricValueArray(slot, nodes);
+        return new Object[] {nodeIdx, ancestorIdx, funcId, metricVals};
+    }
+
+    private static Object metricValueArray(Slot slot, List<FNode> nodes) {
+        int s = slot.ordinal();
+        if (slot == Slot.CPU) {
+            double[] vals = new double[nodes.size()];
+            for (int i = 0; i < vals.length; i++)
+                vals[i] = nodes.get(i).inclVals[s] / 1e9;
+            return vals;
+        }
+        long[] vals = new long[nodes.size()];
+        for (int i = 0; i < vals.length; i++)
+            vals[i] = nodes.get(i).inclVals[s];
+        return vals;
+    }
+
+    Object[] get_ftree_level(BaseMetric bm, int level) {
+        ensureFlameIndexed();
+        if (level < 0 || level >= levels.size())
+            return null;
+        return get_nodes(bm, levels.get(level));
+    }
+
+    Object[] get_ftree_node_children(BaseMetric bm, int nodeIdx) {
+        ensureFlameIndexed();
+        if (nodeIdx == 0)
+            return get_nodes(bm, levels.get(0));
+        if (nodeIdx < 0 || nodeIdx >= nodesByIdx.size())
+            return null;
+        FNode node = nodesByIdx.get(nodeIdx);
+        if (node == null)
+            return null;
+        return get_nodes(bm, new ArrayList<>(node.children.values()));
     }
 
     Hist_data compute_metrics(MetricList mlist, Histable.Type type, Hist_data.Mode mode, List<Histable> objs) {

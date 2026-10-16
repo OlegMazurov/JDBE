@@ -380,6 +380,16 @@ public class DbeSession {
         return null;
     }
 
+    public BaseMetric find_base_reg_metric(String cmd) {
+        for (BaseMetric bm : reg_metrics) {
+            if (bm.get_expr_spec() != null)
+                continue;
+            if (cmd != null && cmd.equals(bm.get_cmd()))
+                return bm;
+        }
+        return null;
+    }
+
     private void insert_metric(BaseMetric mtr, List<BaseMetric> mlist) {
         if (!mtr.hasFlavor(BaseMetric.STATIC)) {
             // insert in front of the first STATIC
