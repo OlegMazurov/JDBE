@@ -95,6 +95,25 @@ public class Hist_data {
         return hist_items.get(index);
     }
 
+    public long[] get_object_indices(int[] selections) {
+        if (selections == null || selections.length == 0)
+            return null;
+        List<Long> indices = new ArrayList<>();
+        for (int sel : selections) {
+            if (sel < 0 || sel >= hist_items.size())
+                continue;
+            HistItem hi = hist_items.get(sel);
+            if (hi == null || hi.obj == null)
+                continue;
+            if (!indices.contains(hi.obj.id))
+                indices.add(hi.obj.id);
+        }
+        long[] result = new long[indices.size()];
+        for (int i = 0; i < result.length; i++)
+            result[i] = indices.get(i);
+        return result;
+    }
+
     public HistItem append_hist_item(Histable obj) {
         HistItem hi = hi_map.get(obj);
         if (hi == null) {
@@ -110,12 +129,19 @@ public class Hist_data {
         return hi_map.get(obj);
     }
 
+    private HistItem find_total_item() {
+        for (HistItem hi : hist_items)
+            if (hi.obj != null && "<Total>".equals(hi.obj.get_name()))
+                return hi;
+        return null;
+    }
+
     DbeStructs.TValue get_value(int metricInd, int row) {
         return get_value_for_item(hist_items.get(row), metricInd);
     }
 
     public DbeStructs.TValue get_value_for_total(int metricInd) {
-        HistItem hi = find_hist_item(DbeSession.getInstance().getTotalFunction());
+        HistItem hi = find_total_item();
         if (hi == null) {
             ERIPC.ipc_log("get_value_for_total: no <Total> HistItem found (hist_items.size()=%d, metricInd=%d)%n",
                     hist_items.size(), metricInd);

@@ -34,7 +34,8 @@ public class DataView {
     private LargeArrays.LargeLongArray index; // sorted vector of data_id (index into dDscr)
     Data[] sortedBy; // columns for sort
     private int sortColCount = 0;
-//    FilterExp filter;
+    private Expression filter;
+    private Expression.Context filterCtx;
     DataViewType type;
 
     public DataView (DataDescriptor ddscr) {
@@ -58,7 +59,11 @@ public class DataView {
                 break;
         }
         Arrays.fill(sortedBy, DATA_SORT_EOL);
-//        filter = null;
+    }
+
+    public void setFilter(Expression filter, Expression.Context ctx) {
+        this.filter = filter;
+        this.filterCtx = ctx;
     }
 
     public DataDescriptor getDataDescriptor() {
@@ -118,8 +123,15 @@ public class DataView {
         if (type == DataViewType.DV_EXT_MANAGED)
             return false;
         boolean updated = false;
+        DataView tmpView = filter != null ? ddscr.createImmutableView() : null;
         while (ddsize < newSize) {
-            index.append(ddsize);
+            if (filter == null) {
+                index.append(ddsize);
+            } else {
+                filterCtx.put(tmpView, ddsize);
+                if (filter.passes(filterCtx))
+                    index.append(ddsize);
+            }
             updated = true;
             ddsize += 1;
         }

@@ -50,6 +50,7 @@ public class DbeView {
     List<DataView[]> dataViews = new ArrayList<>();
     Settings settings;
     String cur_filter_str;
+    Expression cur_filter_expr;
 
     private boolean showAll = true;
     private boolean showHideChanged;
@@ -71,6 +72,15 @@ public class DbeView {
     private List<PathTree> indxspaces;
     private List<Hist_data> indx_data; // index object data
     private List<Histable> sel_idxobj; // selected index objects
+
+    public Hist_data get_indx_data(int subtype) {
+        return subtype < 0 || subtype >= indx_data.size() ? null : indx_data.get(subtype);
+    }
+
+    public void set_indx_data(int subtype, Hist_data data) {
+        if (subtype >= 0 && subtype < indx_data.size())
+            indx_data.set(subtype, data);
+    }
 
     List<Integer> lobjectsNoJava = new ArrayList<>(); // List of indices into LoadObjects excluding java classes
 
@@ -223,7 +233,23 @@ public class DbeView {
     }
 
     public String set_filter(String filter_spec) {
-        throw new RuntimeException("DbeView.set_filter not implemented");
+        if (java.util.Objects.equals(filter_spec, cur_filter_str))
+            return null; // nothing changed
+        if (filter_spec == null) {
+            cur_filter_str = null;
+            cur_filter_expr = null;
+            purge_events();
+            reset_data(false);
+            return null;
+        }
+        Expression expr = DbeSession.getInstance().ql_parse(filter_spec);
+        if (expr == null)
+            return String.format("Invalid filter specification `%s'%n", filter_spec);
+        cur_filter_str = filter_spec;
+        cur_filter_expr = expr;
+        purge_events();
+        reset_data(false);
+        return null;
     }
 
     boolean set_pattern(int m, String pattern) {
@@ -651,10 +677,9 @@ public class DbeView {
     }
 
     public void addIndexSpace(int subtype) {
-//        PathTree is = new PathTree(this, subtype);
-//        indxspaces.store (subtype, is);
-//        indx_data.store (subtype, null);
-//        sel_idxobj.store (subtype, null);
+        indxspaces.add(new PathTree(this, subtype));
+        indx_data.add(null);
+        sel_idxobj.add(null);
         settings.indxobj_define(subtype, false);
     }
 
@@ -798,18 +823,14 @@ public class DbeView {
             }
 
             if (dDscr != null) {
-//                FilterExp filter = get_FilterExp(exp);
                 dview = dDscr.createView();
-//                dview.setFilter(filter);
+                if (cur_filter_expr != null)
+                    dview.setFilter(cur_filter_expr, new Expression.Context(this, exp));
                 if (dview.getSize() < dDscr.getSize()) {
                     filter_active = true;
                 }
             }
             expDataViewList[data_id] = dview;
-
-//            if (saved != null) {
-//                cur_filter_expr = saved;
-//            }
         }
         if (orig_data_id != data_id) {
             // create the derived DataView:

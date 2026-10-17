@@ -24,10 +24,6 @@ public class BaseMetric {
 
     static private final int NSUBTYPES = 2;   // STATIC/EXCLUSIVE, INCLUSIVE
 
-    /** METRIC_*_PRECISION determine the least threshold value
-     * for time measured metrics. Any event that counts for less
-     * than 1sec/METRIC_PRECISION is discarded.
-     */
     static private final long METRIC_SIG_PRECISION = TimeUnit.SECONDS.toMicros(1);
     static private final long METRIC_HR_PRECISION = TimeUnit.SECONDS.toMicros(1);
 
@@ -38,8 +34,8 @@ public class BaseMetric {
     private Expression val;                 // determines the numeric value for packet
     private String val_spec;                // used to generate "val"
 
-    private Expression expr;    // for comparison: an additional expression to determine
-                                // which packets to eval. Should be null otherwise.
+    private Expression expr;    
+                                
     private String expr_spec;   // used to generate "expr"
     int id;                     // unique id (assigned to last_id @ "new")
     Type type;                  // e.g. HWCNTR
@@ -310,21 +306,21 @@ public class BaseMetric {
         System.arraycopy(m.default_visbits, 0, default_visbits, 0, NSUBTYPES);
         if (m.cond_spec != null) {
             cond_spec = m.cond_spec;
-            cond = m.cond.copy();
+            cond = m.cond;
         } else {
             cond = null;
             cond_spec = null;
         }
         if (m.val_spec != null) {
             val_spec = m.val_spec;
-            val = m.val.copy();
+            val = m.val;
         } else {
             val = null;
             val_spec = null;
         }
         if (m.expr_spec != null) {
             expr_spec = m.expr_spec;
-            expr = m.expr.copy();
+            expr = m.expr;
         } else {
             expr = null;
             expr_spec = null;

@@ -39,17 +39,20 @@ public class PathTree {
         int idx; 
     }
 
-    private final FNode root = new FNode();
+    private FNode root = new FNode();
     private final Map<Function, FNode> fnMap = new HashMap<>();
     private boolean built;
+    private int builtPhaseIdx = -1;
 
     private final int indxtype;
+    private final DbeView dbev;
 
     public PathTree(DbeView _dbev) {
         this(_dbev, -1);
     }
 
     public PathTree(DbeView _dbev, int _indxtype) {
+        dbev = _dbev;
         indxtype = _indxtype;
     }
 
@@ -82,9 +85,15 @@ public class PathTree {
     }
 
     private void ensureBuilt() {
-        if (built)
+        if (built && builtPhaseIdx == dbev.phaseIdx)
             return;
         built = true;
+        builtPhaseIdx = dbev.phaseIdx;
+        root = new FNode();
+        fnMap.clear();
+        flameIndexed = false;
+        nodesByIdx.clear();
+        levels.clear();
         root.func = DbeSession.getInstance().getTotalFunction();
         fnMap.put(root.func, root);
         DbeSession session = DbeSession.getInstance();
@@ -93,6 +102,13 @@ public class PathTree {
             insertClockRecords(exp);
             insertHeapRecords(exp);
         }
+    }
+
+    private boolean passesFilter(Expression filter, Expression.Context ctx, DataView view, long i) {
+        if (filter == null)
+            return true;
+        ctx.put(view, i);
+        return filter.passes(ctx);
     }
 
     private void insertClockRecords(Experiment exp) {
@@ -105,7 +121,12 @@ public class PathTree {
         int thridOrd = Prop_type.PROP_THRID.ordinal();
         long size = dDscr.getSize();
         long nsPerTick = exp.coll_params.ptimer_usec * 1000L;
+        Expression filter = dbev.cur_filter_expr;
+        Expression.Context ctx = filter != null ? new Expression.Context(dbev, exp) : null;
+        DataView immutableView = filter != null ? dDscr.createImmutableView() : null;
         for (long i = 0; i < size; i++) {
+            if (!passesFilter(filter, ctx, immutableView, i))
+                continue;
             long ts = dDscr.getLongValue(tstampOrd, i);
             long frinfo = dDscr.getLongValue(frinfoOrd, i);
             long ntick = dDscr.getLongValue(ntickOrd, i);
@@ -127,7 +148,12 @@ public class PathTree {
         int hvaddrOrd = Prop_type.PROP_HVADDR.ordinal();
         int hleakedOrd = Prop_type.PROP_HLEAKED.ordinal();
         long size = dDscr.getSize();
+        Expression filter = dbev.cur_filter_expr;
+        Expression.Context ctx = filter != null ? new Expression.Context(dbev, exp) : null;
+        DataView immutableView = filter != null ? dDscr.createImmutableView() : null;
         for (long i = 0; i < size; i++) {
+            if (!passesFilter(filter, ctx, immutableView, i))
+                continue;
             int htype = dDscr.getIntValue(htypeOrd, i);
             long hvaddr = dDscr.getLongValue(hvaddrOrd, i);
             if (htype == Enums.Heap_type.FREE_TRACE.value || htype == Enums.Heap_type.MUNMAP_TRACE.value
@@ -146,19 +172,26 @@ public class PathTree {
     }
 
     private boolean indxBuilt;
+    private int builtPhaseIdxIndx = -1;
     private final Map<Long, IndexObject> indxObjs = new HashMap<>();
     private final Map<Long, long[]> indxVals = new HashMap<>();
     private final long[] indxGrandTotal = new long[NSLOTS];
     private IndexObject totalIndxObj;
+    private Expression indxKeyExpr;
 
     private void ensureBuiltIndx() {
-        if (indxBuilt)
+        if (indxBuilt && builtPhaseIdxIndx == dbev.phaseIdx)
             return;
         indxBuilt = true;
-        totalIndxObj = new IndexObject(indxtype, -1);
+        builtPhaseIdxIndx = dbev.phaseIdx;
+        indxObjs.clear();
+        indxVals.clear();
+        java.util.Arrays.fill(indxGrandTotal, 0);
+        totalIndxObj = new IndexObject(indxtype, -2);
         totalIndxObj.set_name("<Total>");
         totalIndxObj.nameIsFinal = true;
         DbeSession session = DbeSession.getInstance();
+        indxKeyExpr = session.getIndexSpaceExpr(indxtype);
         for (int i = 0; i < session.nexps(); i++) {
             Experiment exp = session.get_exp(i);
             insertIndxClockRecords(exp);
@@ -176,12 +209,21 @@ public class PathTree {
         int cpuidOrd = Prop_type.PROP_CPUID.ordinal();
         long size = dDscr.getSize();
         long nsPerTick = exp.coll_params.ptimer_usec * 1000L;
+        Expression filter = dbev.cur_filter_expr;
+        Expression.Context ctx = new Expression.Context(dbev, exp);
+        DataView immutableView = dDscr.createImmutableView();
         for (long i = 0; i < size; i++) {
+            ctx.put(immutableView, i);
+            if (filter != null && !filter.passes(ctx))
+                continue;
+            Long key = evalIndxKey(ctx);
+            if (key == null)
+                continue;
             long ts = dDscr.getLongValue(tstampOrd, i);
             long ntick = dDscr.getLongValue(ntickOrd, i);
             long thrid = dDscr.getLongValue(thridOrd, i);
             long cpuid = dDscr.getLongValue(cpuidOrd, i);
-            addIndxSample(exp, thrid, cpuid, ts, Slot.CPU, ntick * nsPerTick);
+            addIndxSample(exp, thrid, cpuid, ts, key, Slot.CPU, ntick * nsPerTick);
         }
     }
 
@@ -197,31 +239,44 @@ public class PathTree {
         int hvaddrOrd = Prop_type.PROP_HVADDR.ordinal();
         int hleakedOrd = Prop_type.PROP_HLEAKED.ordinal();
         long size = dDscr.getSize();
+        Expression filter = dbev.cur_filter_expr;
+        Expression.Context ctx = new Expression.Context(dbev, exp);
+        DataView immutableView = dDscr.createImmutableView();
         for (long i = 0; i < size; i++) {
+            ctx.put(immutableView, i);
+            if (filter != null && !filter.passes(ctx))
+                continue;
             int htype = dDscr.getIntValue(htypeOrd, i);
             long hvaddr = dDscr.getLongValue(hvaddrOrd, i);
             if (htype == Enums.Heap_type.FREE_TRACE.value || htype == Enums.Heap_type.MUNMAP_TRACE.value
                     || hvaddr == 0)
+                continue;
+            Long key = evalIndxKey(ctx);
+            if (key == null)
                 continue;
             long ts = dDscr.getLongValue(tstampOrd, i);
             long thrid = dDscr.getLongValue(thridOrd, i);
             long cpuid = dDscr.getLongValue(cpuidOrd, i);
             long hsize = dDscr.getLongValue(hsizeOrd, i);
             long hleaked = dDscr.getLongValue(hleakedOrd, i);
-            addIndxSample(exp, thrid, cpuid, ts,
+            addIndxSample(exp, thrid, cpuid, ts, key,
                     new Slot[] {Slot.HEAP_ALLOC_BYTES, Slot.HEAP_ALLOC_CNT, Slot.HEAP_LEAK_BYTES, Slot.HEAP_LEAK_CNT},
                     new long[] {hsize, 1, hleaked, hleaked != 0 ? 1 : 0});
         }
     }
 
-    private void addIndxSample(Experiment exp, long thrid, long cpuid, long ts, Slot slot, long val) {
-        addIndxSample(exp, thrid, cpuid, ts, new Slot[] {slot}, new long[] {val});
+    private Long evalIndxKey(Expression.Context ctx) {
+        if (indxKeyExpr == null)
+            return null;
+        List<Long> r = indxKeyExpr.eval(ctx);
+        return r == null ? null : r.get(0);
     }
 
-    private void addIndxSample(Experiment exp, long thrid, long cpuid, long ts, Slot[] slots, long[] vals) {
-        Long key = indxKey(exp, thrid, cpuid);
-        if (key == null)
-            return;
+    private void addIndxSample(Experiment exp, long thrid, long cpuid, long ts, long key, Slot slot, long val) {
+        addIndxSample(exp, thrid, cpuid, ts, key, new Slot[] {slot}, new long[] {val});
+    }
+
+    private void addIndxSample(Experiment exp, long thrid, long cpuid, long ts, long key, Slot[] slots, long[] vals) {
         long[] totals = indxVals.computeIfAbsent(key, k -> new long[NSLOTS]);
         IndexObject obj = indxObjs.computeIfAbsent(key, k -> new IndexObject(indxtype, k));
         if (!obj.nameIsFinal) {
@@ -232,20 +287,25 @@ public class PathTree {
             } else if (indxtype == IndexObject.IndexObjTypes_t.INDEX_CPUS.ordinal()) {
                 obj.set_name("CPU " + cpuid);
                 obj.nameIsFinal = true;
+            } else if (indxtype == IndexObject.IndexObjTypes_t.INDEX_SECONDS.ordinal()) {
+                obj.set_name("Second of execution " + key);
+                obj.nameIsFinal = true;
+            } else if (indxtype == IndexObject.IndexObjTypes_t.INDEX_SAMPLES.ordinal()) {
+                obj.set_name("Sample " + Long.toUnsignedString(key));
+                obj.nameIsFinal = true;
+            } else if (indxtype == IndexObject.IndexObjTypes_t.INDEX_GCEVENTS.ordinal()) {
+                obj.set_name(key == 0 ? "Not in any GCEvent" : "GCEvent " + key);
+                obj.nameIsFinal = true;
+            } else {
+                String spaceName = DbeSession.getInstance().getIndexSpaceName(indxtype);
+                obj.set_name(String.format("%s 0x%016x (%d)", spaceName, key, key));
+                obj.nameIsFinal = true;
             }
         }
         for (int k = 0; k < slots.length; k++) {
             totals[slots[k].ordinal()] += vals[k];
             indxGrandTotal[slots[k].ordinal()] += vals[k];
         }
-    }
-
-    private Long indxKey(Experiment exp, long thrid, long cpuid) {
-        if (indxtype == IndexObject.IndexObjTypes_t.INDEX_THREADS.ordinal())
-            return ((long) exp.getUserExpId() << IndexObject.INDXOBJ_EXPID_SHIFT) | thrid;
-        if (indxtype == IndexObject.IndexObjTypes_t.INDEX_CPUS.ordinal())
-            return cpuid;
-        return null;
     }
 
     private Hist_data computeMetricsIndx(MetricList mlist, Hist_data.Mode mode, List<Histable> objs) {
@@ -274,7 +334,7 @@ public class PathTree {
             if (objs == null || objs.isEmpty() || !(objs.get(0) instanceof IndexObject obj))
                 return hist_data;
             Hist_data.HistItem hi = hist_data.append_hist_item(obj);
-            long[] vals = indxVals.get(obj.id);
+            long[] vals = obj.id == totalIndxObj.id ? indxGrandTotal : indxVals.get(obj.id);
             for (Slot s : Slot.values()) {
                 long v = vals == null ? 0 : vals[s.ordinal()];
                 setMetricValue(hi, exclCol[s.ordinal()], s, v);

@@ -451,16 +451,22 @@ public class DbeSession {
     }
 
     public Expression ql_parse (String expr_spec) {
-//        TODO not implemented
         if (expr_spec == null) {
             expr_spec = "";
         }
-//        QL::Result result (expr_spec);
-//        QL::Parser qlparser (result);
-//        if (qlparser.parse() != 0)
-//            return null;
-//        return result();
-        return new Expression();
+        try {
+            return QLParser.parse(expr_spec);
+        } catch (QLLexer.QLSyntaxException | QLParser.QLParseException e) {
+            return null;
+        }
+    }
+
+    public Prop_type getPropIdByName(String name) {
+        try {
+            return Prop_type.valueOf("PROP_" + name.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            return Prop_type.PROP_NONE;
+        }
     }
 
     public boolean has_java() {
@@ -522,6 +528,18 @@ public class DbeSession {
         if (index < 0 || index >= dyn_indxobj.size())
             return null;
         return dyn_indxobj.get(index).name;
+    }
+
+    public Expression getIndexSpaceExpr(int index) {
+        if (index < 0 || index >= dyn_indxobj.size())
+            return null;
+        return dyn_indxobj.get(index).index_expr;
+    }
+
+    public String getIndexSpaceExprStr(int index) {
+        if (index < 0 || index >= dyn_indxobj.size())
+            return null;
+        return dyn_indxobj.get(index).index_expr_str;
     }
 
     public Module createModule(LoadObject lo, String nm) {

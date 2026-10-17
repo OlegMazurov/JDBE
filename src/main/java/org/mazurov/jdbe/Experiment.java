@@ -156,6 +156,32 @@ public class Experiment {
 
     List<Sample> samples = new ArrayList<>();
     String first_sample_label;
+    private Sample sample_last_used;
+    private GCEvent gcevent_last_used;
+
+    Sample mapEventToSample(long ts) {
+        if (sample_last_used != null && ts >= sample_last_used.start_time && ts <= sample_last_used.end_time)
+            return sample_last_used;
+        for (Sample sample : samples) {
+            if (ts >= sample.start_time && ts <= sample.end_time) {
+                sample_last_used = sample;
+                return sample;
+            }
+        }
+        return null;
+    }
+
+    GCEvent mapEventToGCEvent(long ts) {
+        if (gcevent_last_used != null && ts >= gcevent_last_used.start && ts <= gcevent_last_used.end)
+            return gcevent_last_used;
+        for (GCEvent gcevent : gcevents) {
+            if (ts >= gcevent.start && ts <= gcevent.end) {
+                gcevent_last_used = gcevent;
+                return gcevent;
+            }
+        }
+        return null;
+    }
 
     static class Collection_params { // Experiment collection parameters
 
@@ -450,6 +476,14 @@ public class Experiment {
         if (dDscr == null)
             return; // no clock-profiling data collected in this experiment
         read_data_file(SP_PROFILE_FILE, String.format("Loading Clock Profiling Data: %s", new File(expt_name).getName()));
+        updateLastEventFromDataDescriptor(dDscr);
+    }
+
+    private void updateLastEventFromDataDescriptor(DataDescriptor dDscr) {
+        int tstampOrd = Prop_type.PROP_TSTAMP.ordinal();
+        long n = dDscr.getSize();
+        for (long i = 0; i < n; i++)
+            update_last_event(dDscr.getLongValue(tstampOrd, i));
     }
 
     private static final String SP_HEAPTRACE_FILE = "heaptrace";
@@ -459,6 +493,7 @@ public class Experiment {
         if (dDscr == null)
             return; // no heap tracing in this experiment
         read_data_file(SP_HEAPTRACE_FILE, String.format("Loading Heap Tracing Data: %s", new File(expt_name).getName()));
+        updateLastEventFromDataDescriptor(dDscr);
         compute_heap_leaked(dDscr);
     }
 
@@ -910,6 +945,11 @@ public class Experiment {
         return last_event != ZERO_TIME ? last_event : exp_start_time;
     }
 
+    // Mirrors native's Experiment::getGCDuration (Experiment.h:216-221).
+    public long getGCDuration() {
+        return gc_duration;
+    }
+
     public String getHostname() {
         return hostname;
     }
@@ -1247,6 +1287,10 @@ public class Experiment {
             if (jt.tid == tid && ts >= jt.start && ts < jt.end)
                 return jt;
         return JTHREAD_NONE;
+    }
+
+    JThread lookupJThread(long tid, long ts) {
+        return map_pckt_to_Jthread(tid, ts);
     }
 
     JThread get_jthread(long tid) {

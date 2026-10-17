@@ -601,6 +601,44 @@ public class ERIPC {
                     String res = dbeGetFilterStr(arg1);
                     req.writeString(res);
                 }
+                case "validateFilterExpression" -> {
+                    String arg1 = req.readString();
+                    int res = dbeValidateFilterExpression(arg1);
+                    ipc_log("  validateFilterExpression('%s') returned %d\n", arg1, res);
+                    req.writeInt(res);
+                }
+                case "getFilterKeywords" -> {
+                    int arg1 = req.readInt();
+                    ipc_log("  args = %d\n", arg1);
+                    Object[] res = dbeGetFilterKeywords(arg1);
+                    req.writeArray(res);
+                }
+                case "setFilterStr" -> {
+                    int arg1 = req.readInt();
+                    String arg2 = req.readString();
+                    ipc_log("  args = %d, %s\n", arg1, arg2);
+                    String res = dbeSetFilterStr(arg1, arg2);
+                    req.writeString(res);
+                }
+                case "defineIndxObj" -> {
+                    String arg1 = req.readString();
+                    String arg2 = req.readString();
+                    String arg3 = req.readString();
+                    String arg4 = req.readString();
+                    ipc_log("  args = %s, %s, %s, %s\n", arg1, arg2, arg3, arg4);
+                    String res = dbeDefineIndxObj(arg1, arg2, arg3, arg4);
+                    req.writeString(res);
+                }
+                case "composeFilterClause" -> {
+                    int arg1 = req.readInt();
+                    int arg2 = req.readInt();
+                    int arg3 = req.readInt();
+                    int[] arg4 = (int[]) req.readArray();
+                    ipc_log("  args = %d, %d, %d, %d selections\n", arg1, arg2, arg3,
+                            arg4 == null ? 0 : arg4.length);
+                    String res = dbeComposeFilterClause(arg1, arg2, arg3, arg4);
+                    req.writeString(res);
+                }
                 case "getFuncListMini" -> {
                     int arg1 = req.readInt();
                     int arg2 = req.readInt();

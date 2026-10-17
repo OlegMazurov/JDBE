@@ -344,7 +344,22 @@ public class DBE {
             valueTable[i] = new double[] { 0.0 };
             highlightTable[i] = new boolean[] { false };
         }
-        if (DbeSession.getInstance().nexps() == 0 || numMetrics == 0)
+        if (DbeSession.getInstance().nexps() == 0)
+            return new Object[] { valueTable, highlightTable };
+
+        Experiment exp0 = DbeSession.getInstance().get_exp(0);
+        for (int i = 0; i < numNonMetrics; i++) {
+            double seconds;
+            if (BaseMetricTreeNode.L1_DURATION.equals(nonMetricCmds[i]))
+                seconds = (exp0.getLastEvent() - exp0.getStartTime()) * 1.0e-9;
+            else if (BaseMetricTreeNode.L1_GCDURATION.equals(nonMetricCmds[i]))
+                seconds = exp0.getGCDuration() * 1.0e-9;
+            else
+                continue;
+            valueTable[numMetrics + i] = new double[] { seconds };
+        }
+
+        if (numMetrics == 0)
             return new Object[] { valueTable, highlightTable };
 
         BaseMetricTreeNode root = DbeSession.getInstance().get_reg_metrics_tree();
@@ -936,6 +951,12 @@ public class DBE {
             dbeSetSelObjV2(dbevindex, sel_obj);
             return -1;
         }
+        if (type == FuncListDisp_type.DSP_INDXOBJ.value) {
+            MetricList indxMlist = dbev.get_metric_list(MetricType.MET_INDX);
+            Hist_data indxData = dbev.get_hist_data(indxMlist, Histable.Type.INDEXOBJ, subtype, Hist_data.Mode.ALL);
+            dbev.set_indx_data(subtype, indxData);
+            return -1;
+        }
         if (type != FuncListDisp_type.DSP_FUNCTION.value) {
             dbev.warning_msg = "DSP type not yet supported by this port";
             return -1;
@@ -1008,12 +1029,51 @@ public class DBE {
         throw new RuntimeException("dbeGetExpSelection not implemented");
     }
 
-    public static String dbeSetFilterStr(int arg1, String arg2) {
-        throw new RuntimeException("dbeSetFilterStr not implemented");
+    public static String dbeSetFilterStr(int dbevindex, String filter_str) {
+        return DbeSession.getInstance().getView(dbevindex).set_filter(filter_str);
     }
 
     public static String dbeGetFilterStr(int dbevindex) {
         return DbeSession.getInstance().getView(dbevindex).get_filter();
+    }
+
+    public static String dbeDefineIndxObj(String name, String index_expr, String sdesc, String ldesc) {
+        return DbeSession.getInstance().indxobj_define(name, null, index_expr, sdesc, ldesc);
+    }
+
+    public static int dbeValidateFilterExpression(String str_expr) {
+        if (str_expr == null)
+            return 0;
+        return DbeSession.getInstance().ql_parse(str_expr) == null ? 0 : 1;
+    }
+
+    public static Object[] dbeGetFilterKeywords(int dbevindex) {
+        List<Prop_type> props = new ArrayList<>();
+        for (Prop_type p : Prop_type.values())
+            if (p != Prop_type.PROP_NONE && p != Prop_type.PROP_LAST)
+                props.add(p);
+
+        int n = 1 + props.size(); // one section header row + one row per property
+        String[] kwCategory = new String[n];
+        String[] kwCategoryI18N = new String[n];
+        String[] kwDataType = new String[n];
+        String[] kwKeyword = new String[n];
+        String[] kwFormula = new String[n];
+        String[] kwDescription = new String[n];
+        Object[] kwEnumDescs = new Object[n];
+
+        kwCategory[0] = "FK_SECTION";
+        kwCategoryI18N[0] = "Properties";
+        for (int i = 0; i < props.size(); i++) {
+            int row = i + 1;
+            String name = props.get(i).name().substring("PROP_".length());
+            kwCategory[row] = "FK_PROPERTY";
+            kwCategoryI18N[row] = "Properties";
+            kwKeyword[row] = name;
+            kwFormula[row] = name;
+        }
+        return new Object[] { kwCategory, kwCategoryI18N, kwDataType, kwKeyword, kwFormula, kwDescription,
+                kwEnumDescs };
     }
 
     public static Object[] dbeGetFilters(int arg1, int arg2) {
@@ -1046,10 +1106,6 @@ public class DBE {
 
     public static Object[] dbeGetCustomIndxObjects(int arg1) {
         throw new RuntimeException("dbeGetCustomIndxObjects not implemented");
-    }
-
-    public static String dbeDefineIndxObj(String name, String index_expr, String sdesc, String ldesc) {
-        throw new RuntimeException("dbeDefineIndxObj not implemented");
     }
 
     private static final Map<Integer, Long> selObjV2 = new HashMap<>();
@@ -1350,6 +1406,8 @@ public class DBE {
                 hobjs.add(DbeSession.getInstance().findObjectById(id));
         }
         Hist_data data = dbev.get_hist_data(mlist, type, subtype, mode, hobjs);
+        if (type == Histable.Type.INDEXOBJ && mode == Hist_data.Mode.ALL)
+            dbev.set_indx_data(subtype, data);
         return dbeGetTableDataV2Data(data);
     }
 
@@ -1382,8 +1440,36 @@ public class DBE {
         throw new RuntimeException("dbeGetTotalMax not implemented");
     }
 
-    public static String dbeComposeFilterClause(int arg1, int arg2, int arg3, int[] arg4) {
-        throw new RuntimeException("dbeComposeFilterClause not implemented");
+    public static String dbeComposeFilterClause(int dbevindex, int type, int subtype, int[] selections) {
+        DbeView dbev = DbeSession.getInstance().getView(dbevindex);
+        Hist_data data;
+        String keyExpr;
+        if (type == FuncListDisp_type.DSP_FUNCTION.value) {
+            data = dbev.func_data;
+            keyExpr = "LEAF";
+        } else if (type == FuncListDisp_type.DSP_INDXOBJ.value) {
+            data = dbev.get_indx_data(subtype);
+            keyExpr = indexSpaceKeyExpr(subtype);
+        } else {
+            return null;
+        }
+        if (data == null || keyExpr == null)
+            return null;
+        long[] objIds = data.get_object_indices(selections);
+        if (objIds == null || objIds.length == 0)
+            return null;
+        StringBuilder sb = new StringBuilder("(").append(keyExpr).append(" IN (");
+        for (int i = 0; i < objIds.length; i++) {
+            if (i > 0)
+                sb.append(", ");
+            sb.append(objIds[i]);
+        }
+        sb.append("))");
+        return sb.toString();
+    }
+
+    private static String indexSpaceKeyExpr(int subtype) {
+        return DbeSession.getInstance().getIndexSpaceExprStr(subtype);
     }
 
     public static Object[] dbeGetOverviewList(int arg1) {
@@ -1396,18 +1482,28 @@ public class DBE {
 
     public static Object[] dbeGetSummary(int dbevindex, long[] selObjs, int type, int subtype) {
         DbeView dbev = DbeSession.getInstance().getView(dbevindex);
-        if (selObjs == null || selObjs.length == 0 || type != FuncListDisp_type.DSP_FUNCTION.value)
+        if (selObjs == null || selObjs.length == 0)
             return null;
-        Hist_data funcData = dbev.func_data;
-        if (funcData == null || funcData.get_status() != Hist_data.Hist_status.SUCCESS)
+        Histable.Type histType;
+        Hist_data baseData;
+        if (type == FuncListDisp_type.DSP_FUNCTION.value) {
+            histType = Histable.Type.FUNCTION;
+            baseData = dbev.func_data;
+        } else if (type == FuncListDisp_type.DSP_INDXOBJ.value) {
+            histType = Histable.Type.INDEXOBJ;
+            baseData = dbev.get_indx_data(subtype);
+        } else {
+            return null;
+        }
+        if (baseData == null || baseData.get_status() != Hist_data.Hist_status.SUCCESS)
             return null;
 
         List<Histable> objs = new ArrayList<>();
         for (long selObj : selObjs) {
             int sel_index = (int) selObj;
-            if (sel_index < 0 || sel_index >= funcData.size())
+            if (sel_index < 0 || sel_index >= baseData.size())
                 continue;
-            Hist_data.HistItem item = funcData.fetch(sel_index);
+            Hist_data.HistItem item = baseData.fetch(sel_index);
             if (item.obj == null)
                 continue;
             if ("<Total>".equals(item.obj.get_name())) {
@@ -1420,30 +1516,43 @@ public class DBE {
         if (objs.isEmpty())
             return null;
 
-        int[] saligns = { 1, 1, 1, 3, 3, 1, 1, 1 }; // TEXT_LEFT=1, TEXT_RIGHT=3 (enums.h)
-        char[] mnemonic = { 'N', 'P', 'z', 'r', 'b', 'j', 'm', 'A' };
-        String[] nameLabels = { "Name", "PC Address", "Size", "Source File",
-                "Object File", "Load Object", "Mangled Name", "Aliases" };
-        String name0 = objs.get(0).get_name();
-        if (objs.size() > 1)
-            name0 = name0 + ": Multiple Selection (" + objs.size() + " objects)";
-        String[] nameValues = { name0, null, null, null, null, null, null, null };
-        Object[] name_objs = { saligns, mnemonic, nameLabels, nameValues };
+        Object[] name_objs;
+        if (type == FuncListDisp_type.DSP_INDXOBJ.value) {
+            String name0 = objs.size() == 1
+                    ? objs.get(0).get_name()
+                    : "Multiple Selection (" + objs.size() + " objects)";
+            name_objs = new Object[] {
+                    new int[] { 1 }, // TEXT_LEFT
+                    new char[] { 'I' },
+                    new String[] { "Index Object" },
+                    new String[] { name0 }
+            };
+        } else {
+            int[] saligns = { 1, 1, 1, 3, 3, 1, 1, 1 }; // TEXT_LEFT=1, TEXT_RIGHT=3 (enums.h)
+            char[] mnemonic = { 'N', 'P', 'z', 'r', 'b', 'j', 'm', 'A' };
+            String[] nameLabels = { "Name", "PC Address", "Size", "Source File",
+                    "Object File", "Load Object", "Mangled Name", "Aliases" };
+            String name0 = objs.get(0).get_name();
+            if (objs.size() > 1)
+                name0 = name0 + ": Multiple Selection (" + objs.size() + " objects)";
+            String[] nameValues = { name0, null, null, null, null, null, null, null };
+            name_objs = new Object[] { saligns, mnemonic, nameLabels, nameValues };
+        }
 
         MetricList propMlist = new MetricList(dbev.get_metric_ref(MetricType.MET_NORMAL));
         List<Metric> items = propMlist.get_items();
-        int nitems = items.size();
-        String[] jlabels = new String[nitems];
-        double[] clockList = new double[nitems];
-        double[] exclList = new double[nitems];
-        double[] epList = new double[nitems];
-        double[] inclList = new double[nitems];
-        double[] ipList = new double[nitems];
-        int[] vtype = new int[nitems];
+
+        List<String> jlabels = new ArrayList<>();
+        List<Double> clockList = new ArrayList<>();
+        List<Double> exclList = new ArrayList<>();
+        List<Double> epList = new ArrayList<>();
+        List<Double> inclList = new ArrayList<>();
+        List<Double> ipList = new ArrayList<>();
+        List<Integer> vtype = new ArrayList<>();
 
         boolean first = true;
         for (Histable obj : objs) {
-            Hist_data selfData = dbev.get_hist_data(propMlist, Histable.Type.FUNCTION, subtype,
+            Hist_data selfData = dbev.get_hist_data(propMlist, histType, subtype,
                     Hist_data.Mode.SELF, List.of(obj));
             if (selfData.get_status() != Hist_data.Hist_status.SUCCESS)
                 continue;
@@ -1454,30 +1563,48 @@ public class DBE {
                 Metric mitem = items.get(index);
                 if (mitem.get_subtype() == BaseMetric.STATIC)
                     continue;
+                while (jlabels.size() <= index2) {
+                    jlabels.add(null);
+                    clockList.add(0.0);
+                    exclList.add(0.0);
+                    epList.add(0.0);
+                    inclList.add(0.0);
+                    ipList.add(0.0);
+                    vtype.add(0);
+                }
                 double dvalue = values != null ? values[index].to_double() : 0.0;
-                double dtotal = findTotalValue(funcData, mitem.get_type(), mitem.get_subtype());
+                double dtotal = findTotalValue(baseData, mitem.get_type(), mitem.get_subtype());
                 double percentScale = dtotal == 0.0 ? 0.0 : 100.0 / dtotal;
+                clockList.set(index2, mitem.is_time_val() ? 1.0e6 * DbeSession.getInstance().get_clock(-1) : 0.0);
                 if (mitem.get_subtype() == BaseMetric.EXCLUSIVE) {
                     if (first) {
-                        jlabels[index2] = mitem.get_username();
-                        vtype[index2] = mitem.get_vtype().ordinal() + 1;
+                        jlabels.set(index2, mitem.get_username());
+                        vtype.set(index2, mitem.get_vtype().ordinal() + 1);
                     }
-                    dvalue += exclList[index2];
-                    exclList[index2] = dvalue;
-                    epList[index2] = dvalue * percentScale;
+                    dvalue += exclList.get(index2);
+                    exclList.set(index2, dvalue);
+                    epList.set(index2, dvalue * percentScale);
                 } else {
-                    dvalue += inclList[index2];
+                    dvalue += inclList.get(index2);
                     if (dvalue > dtotal)
                         dvalue = dtotal;
-                    inclList[index2] = dvalue;
-                    ipList[index2] = dvalue * percentScale;
+                    inclList.set(index2, dvalue);
+                    ipList.set(index2, dvalue * percentScale);
                     index2++;
                 }
             }
             first = false;
         }
 
-        Object[] metric_objs = { jlabels, clockList, exclList, epList, inclList, ipList, vtype };
+        Object[] metric_objs = {
+                jlabels.toArray(new String[0]),
+                clockList.stream().mapToDouble(Double::doubleValue).toArray(),
+                exclList.stream().mapToDouble(Double::doubleValue).toArray(),
+                epList.stream().mapToDouble(Double::doubleValue).toArray(),
+                inclList.stream().mapToDouble(Double::doubleValue).toArray(),
+                ipList.stream().mapToDouble(Double::doubleValue).toArray(),
+                vtype.stream().mapToInt(Integer::intValue).toArray()
+        };
         return new Object[] { name_objs, metric_objs };
     }
 
