@@ -17,6 +17,7 @@ package org.mazurov.jdbe;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -32,7 +33,7 @@ public class PathTree {
     static class FNode {
         FNode parent;
         Function func;
-        Map<Function, FNode> children = new HashMap<>();
+        Map<Function, FNode> children = new LinkedHashMap<>();
         long[] exclVals = new long[NSLOTS]; 
         long[] inclVals = new long[NSLOTS]; 
         FNode funclistNext; 
@@ -40,7 +41,7 @@ public class PathTree {
     }
 
     private FNode root = new FNode();
-    private final Map<Function, FNode> fnMap = new HashMap<>();
+    private final Map<Function, FNode> fnMap = new LinkedHashMap<>();
     private boolean built;
     private int builtPhaseIdx = -1;
 
@@ -364,7 +365,7 @@ public class PathTree {
     Map<Function, long[]> computeTotals(Slot slot) {
         ensureBuilt();
         int s = slot.ordinal();
-        Map<Function, long[]> totals = new HashMap<>();
+        Map<Function, long[]> totals = new LinkedHashMap<>();
         for (Map.Entry<Function, FNode> e : fnMap.entrySet()) {
             Function f = e.getKey();
             long excl = 0, incl = 0;
@@ -589,7 +590,7 @@ public class PathTree {
                     setMetricValue(hi, inclCol[s.ordinal()], s, incl);
                 }
             } else {
-                Map<Function, long[]> selfAcc = new HashMap<>();
+                Map<Function, long[]> selfAcc = new LinkedHashMap<>();
                 getSelfMetricsPath(selfAcc, attrCol, exclCol, inclCol, targetPath, root, false, 0,
                         new ArrayList<>());
                 for (Map.Entry<Function, long[]> e : selfAcc.entrySet()) {
@@ -605,7 +606,7 @@ public class PathTree {
             return hist_data;
         }
 
-        Map<Function, long[]> acc = new HashMap<>();
+        Map<Function, long[]> acc = new LinkedHashMap<>();
         List<FNode> path = new ArrayList<>();
         if (mode == Hist_data.Mode.CALLERS)
             getClrMetrics(acc, attrCol, targetPath, root, -1, 0, path);

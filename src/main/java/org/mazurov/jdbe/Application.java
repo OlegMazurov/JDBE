@@ -20,7 +20,7 @@ public class Application {
     protected String prog_version;
     protected String prog_name;
     protected String whoami;
-    private String cur_dir;
+    private static String cur_dir;
     protected Emsgqueue commentq = new Emsgqueue("app_commentq");
 
     public Emsg fetch_comments() {
@@ -40,9 +40,14 @@ public class Application {
     }
 
     public String get_cur_dir() {
-        if (cur_dir == null) {
-            cur_dir = System.getProperty("user.dir");
-        }
+        return cur_dir != null ? cur_dir : System.getProperty("user.dir");
+    }
+
+    static void set_cur_dir(String dir) {
+        cur_dir = dir;
+    }
+
+    static String engine_cur_dir() {
         return cur_dir;
     }
 

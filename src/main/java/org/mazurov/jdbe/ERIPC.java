@@ -30,6 +30,8 @@ public class ERIPC {
 
     static PrintStream ipcLog;
 
+    static boolean embedded;
+
     static void ipc_log(String fmt, Object... values) {
         if (ipcLog == null) return;
         ipcLog.format(fmt, values);
@@ -112,6 +114,7 @@ public class ERIPC {
         }
         ipc_log("Args: %s%n", String.join(" ", DbeApplication.getInstance().getArgs()));
 
+        ipc_protocol = null;
         check_env_args(DbeApplication.getInstance().getArgs());
         print_ipc_protocol_confirmation();
         setProgress (100, "Restart engine");
@@ -154,8 +157,7 @@ public class ERIPC {
                     req.writeString(null);
                 }
                 case "getCurrentDirectory" -> {
-                    Path currentRelativePath = Paths.get("");
-                    String res = currentRelativePath.toAbsolutePath().toString();
+                    String res = Paths.get(DbeApplication.getInstance().get_cur_dir()).toAbsolutePath().toString();
                     req.writeString (res);
                 }
                 case "setCurrentDirectory" -> {
@@ -163,9 +165,12 @@ public class ERIPC {
                     ipc_log("  arg = %s%n", arg1);
                     int res = -1;
                     if (arg1 != null) {
-                        java.io.File dir = new java.io.File(arg1);
+                        java.io.File dir = new java.io.File(Util.resolve(arg1)).getAbsoluteFile();
                         if (dir.isDirectory()) {
-                            System.setProperty("user.dir", dir.getAbsolutePath());
+                            Application.set_cur_dir(dir.getPath());
+                            if (!embedded) {
+                                System.setProperty("user.dir", dir.getPath());
+                            }
                             res = 0;
                         }
                     }
@@ -177,7 +182,9 @@ public class ERIPC {
                 case "setLocale" -> {
                     String arg1 = req.readString(); 
                     ipc_log("  arg = %s%n", arg1);
-                    Locale.setDefault(new Locale(arg1));
+                    if (!embedded) {
+                        Locale.setDefault(new Locale(arg1));
+                    }
                     req.writeString(Locale.getDefault().toString());
                 }
                 case "setExperimentsGroups" -> {
@@ -797,7 +804,7 @@ public class ERIPC {
                 }
             }
             ipc_log("  processing IPC command %s complete\n", inp);
-            System.out.flush();
+            IPCIO.flush();
         }
     }
 }

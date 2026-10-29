@@ -17,6 +17,14 @@ package org.mazurov.jdbe;
 
 public class Util {
 
+    public static String resolve(String path) {
+        String dir = Application.engine_cur_dir();
+        if (path == null || dir == null || new java.io.File(path).isAbsolute()) {
+            return path;
+        }
+        return new java.io.File(dir, path).getPath();
+    }
+
     public static long strtoull(String str) {
         return parseCLong(str, true);
     }

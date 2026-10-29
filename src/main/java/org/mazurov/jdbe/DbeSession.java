@@ -69,6 +69,7 @@ public class DbeSession {
 
     private DbeSession(Settings settings, boolean ipcOrRdtMode) {
         INSTANCE = this;
+        DBE.resetSessionState();
         this.settings = new Settings(settings);
 
         // define Index objects
@@ -157,6 +158,10 @@ public class DbeSession {
 
     public static DbeSession getInstance() {
         return INSTANCE;
+    }
+
+    static void shutdown() {
+        INSTANCE = null;
     }
 
     public boolean is_interactive() {
@@ -286,7 +291,7 @@ public class DbeSession {
 
     public ArrayList<String> get_group_or_expt(String path) {
         ArrayList<String> exp_list = new ArrayList<>();
-        try (BufferedReader reader = new BufferedReader(new FileReader(path))) {
+        try (BufferedReader reader = new BufferedReader(new FileReader(Util.resolve(path)))) {
             String firstLine = reader.readLine();
             if (firstLine == null || !firstLine.startsWith(SP_GROUP_HEADER)) {
                 // it's not an experiment group
@@ -310,7 +315,7 @@ public class DbeSession {
 
     private static String canonical_path(String path) {
         try {
-            return new File(path).getCanonicalPath();
+            return new File(Util.resolve(path)).getCanonicalPath();
         } catch (IOException e) {
             return path;
         }

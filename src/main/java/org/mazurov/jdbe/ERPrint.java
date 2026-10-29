@@ -21,6 +21,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -52,25 +53,60 @@ public class ERPrint extends DbeApplication {
         super(args);
     }
 
+    public static class ExitException extends RuntimeException {
+        public final int status;
+
+        ExitException(int status) {
+            super("exit " + status);
+            this.status = status;
+        }
+    }
+
     static void main(String[] args) throws Exception {
         if (!Arrays.asList(args).contains("-IPC")) {
-            new ERPrint(args).start(args);
+            try {
+                new ERPrint(args).start(args);
+            } catch (ExitException e) {
+                System.exit(e.status);
+            }
             return;
         }
+        ipcMain(args);
+    }
+
+    public static void runEmbedded(String[] args, InputStream in, OutputStream out) throws Exception {
+        String[] ipcArgs = args;
+        if (args.length == 0 || !args[0].equals("-IPC")) {
+            ipcArgs = new String[args.length + 1];
+            ipcArgs[0] = "-IPC";
+            System.arraycopy(args, 0, ipcArgs, 1, args.length);
+        }
+        IPCIO.setStreams(in, out);
+        ERIPC.embedded = true;
+        BaseMetric.last_id.set(0);
+        try {
+            ipcMain(ipcArgs);
+        } finally {
+            ERIPC.embedded = false;
+            DbeApplication.shutdown();
+            DbeSession.shutdown();
+        }
+    }
+
+    private static void ipcMain(String[] args) throws Exception {
         for (;;) {
             ERPrint erPrint = new ERPrint(args);
             erPrint.rdtMode = false;
             try {
                 ERIPC.ipc_mainLoop();
-                return; // normal exit: NULL command / EOF on the wire
+                return; 
             } catch (ERIPC.RestartRequestedException e) {
-                // fall through and loop: rebuild everything, re-enter ipc_mainLoop()
             }
         }
     }
 
     void abort() {
-        System.exit(2);
+        throw new ExitException(2);
     }
 
     void close() {
@@ -222,7 +258,7 @@ public class ERPrint extends DbeApplication {
                 case HELP:
                     if (i + 1 + arg_count == argv.length) {
                         usage();
-                        System.exit(0);
+                        throw new ExitException(0);
                     }
                     break;
                 case HHELP:
@@ -232,21 +268,21 @@ public class ERPrint extends DbeApplication {
                     System.out.println();
                     mo_list(false, System.out);
                     System.out.print("\nSee gprofng(1) for more details\n");
-                    System.exit(0);
+                    throw new ExitException(0);
                 case ADD_EXP:
                 case DROP_EXP:
                 case OPEN_EXP:
                     System.err.printf("Error: command %s can not appear on the command line\n", argv[i]);
-                    System.exit (2);
+                    throw new ExitException(2);
                 case VERSION_cmd:
                     Application.print_version_info();
-                    System.exit (0);
+                    throw new ExitException(0);
                 case AMBIGUOUS_CMD:
                     System.err.printf("Error: Ambiguous command: %s\n", argv[i]);
-                    System.exit (2);
+                    throw new ExitException(2);
                 case UNKNOWN_CMD:
                     System.err.printf("Error: Invalid command: %s\n", argv[i]);
-                    System.exit (2);
+                    throw new ExitException(2);
                     // it's a plausible argument; see if we process now or later
                 case SOURCE:
                 case DISASM:
@@ -289,7 +325,7 @@ public class ERPrint extends DbeApplication {
         // Make sure some experiments were specified
         if (exp_list.isEmpty()) { // no experiment name
             System.err.printf("%s: Missing experiment directory (use the --help option to get a usage overview)", whoami);
-            System.exit(1);
+            throw new ExitException(1);
         }
 
         // add the experiments to the session
@@ -333,7 +369,7 @@ public class ERPrint extends DbeApplication {
                     inp_file = fopen (argv[++i], "r");
                     if (inp_file == null) {
                         System.err.printf("Error: Script file cannot be opened: %s\n", argv[i]);
-                        System.exit(3);
+                        throw new ExitException(3);
                     }
                     proc_script();
                     break;
@@ -535,8 +571,7 @@ public class ERPrint extends DbeApplication {
                         proc_cmd(cmd_type, cparam, arglist[0], arglist[1], null, null);
                         break;
                     case QUIT:
-                        System.exit(0);
-                        break;
+                        throw new ExitException(0);
                     case QQUIT:
                         was_QQUIT = true;
                         return;
@@ -1089,8 +1124,7 @@ public class ERPrint extends DbeApplication {
                 }
                 break;
             case QUIT:
-                System.exit(0);
-                break;
+                throw new ExitException(0);
 
             // commands relating to index Objects
             case INDXOBJ:
@@ -1558,7 +1592,6 @@ public class ERPrint extends DbeApplication {
     }
 
     void dump_proc_warnings() {
-//        TODO: restore once PAthTree is implemented
 //        PathTree p = dbev.get_path_tree();
 //        if (p == null)
 //            return;

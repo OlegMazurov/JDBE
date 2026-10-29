@@ -1594,6 +1594,7 @@ public class Experiment {
     Exp_status find_expdir(String path) {
 
         // Save the name
+        path = Util.resolve(path);
         expt_name = path;
 
         // Check that the name ends in .er

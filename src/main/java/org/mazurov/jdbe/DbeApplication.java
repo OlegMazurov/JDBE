@@ -35,6 +35,11 @@ public class DbeApplication extends Application {
         return INSTANCE;
     }
 
+    static void shutdown() {
+        INSTANCE = null;
+        Application.set_cur_dir(null);
+    }
+
     public String[] getArgs() {
         return args;
     }

@@ -16,6 +16,9 @@ along with this program. If not, see <http://www.gnu.org/licenses>. */
 package org.mazurov.jdbe;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import static org.mazurov.jdbe.ERIPC.ipc_log;
@@ -49,10 +52,22 @@ public class IPCIO {
     private static final int	L_OBJECT   = 7;
     private static final int	L_CHAR     = 8;
 
+    private static InputStream in = System.in;
+    private static PrintStream out = System.out;
+
+    static void setStreams(InputStream input, OutputStream output) {
+        in = input;
+        out = new PrintStream(output, false, StandardCharsets.UTF_8);
+    }
+
+    static void flush() {
+        out.flush();
+    }
+
     private static int readByte() throws IOException {
         int val = 0;
         for (int i = 0; i < 2; ++i) {
-            int c = System.in.read();
+            int c = in.read();
             switch (c) {
                 case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' -> val = val * 16 + c - '0';
                 case 'a', 'b', 'c', 'd', 'e', 'f' -> val = val * 16 + c - 'a' + 10;
@@ -100,7 +115,7 @@ public class IPCIO {
         }
 
         void read() throws IOException {
-            System.in.readNBytes(buf, 0, buf.length);
+            in.readNBytes(buf, 0, buf.length);
         }
 
         int readByte() throws IOException {
@@ -501,11 +516,11 @@ public class IPCIO {
             byte[] payload = sb.toString().getBytes(StandardCharsets.UTF_8);
             writeResponseHeader(requestID, responseType, responseStatus, payload.length);
             try {
-                System.out.write(payload);
+                out.write(payload);
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
-            System.out.flush();
+            out.flush();
         }
 
         void sendByte(int b) {
@@ -617,15 +632,15 @@ public class IPCIO {
     }
 
     public static void writePlainString(String s) {
-        System.out.print(s);
-        System.out.flush();
+        out.print(s);
+        out.flush();
     }
 
     static void writeResponseHeader(int requestID, int responseType, int responseStatus, int nBytes) {
         if (responseType == RESPONSE_TYPE_HANDSHAKE) {
             nBytes = IPC_VERSION_NUMBER;
         }
-        System.out.printf("%02x%08x%02x%02x%08x", HEADER_MARKER, requestID,
+        out.printf("%02x%08x%02x%02x%08x", HEADER_MARKER, requestID,
                 responseType, responseStatus, nBytes);
     }
 

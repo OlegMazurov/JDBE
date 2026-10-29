@@ -90,7 +90,7 @@ public class DBE {
 
     public static String dbeGetFileAttributes(String fileName, String format) {
         if ("/bin/ls -dl ".equals(format)) {
-            File file = new File(fileName);
+            File file = new File(Util.resolve(fileName));
             if (file.canRead()) {
                 if (file.isDirectory()) {
                     return String.format("drwxrwxr-x %s%n", fileName);
@@ -125,7 +125,7 @@ public class DBE {
 
         StringBuilder sb = new StringBuilder();
         boolean format_aF = "/bin/ls -aF".equals(format);
-        File[] list = new File(path).listFiles();
+        File[] list = new File(Util.resolve(path)).listFiles();
         if (list == null) return "";
         for (File entry : list) {
             sb.append (entry.getName());
@@ -1109,6 +1109,10 @@ public class DBE {
     }
 
     private static final Map<Integer, Long> selObjV2 = new HashMap<>();
+
+    static void resetSessionState() {
+        selObjV2.clear();
+    }
 
     public static void dbeSetSelObj(int dbevindex, long id, int type, int subtype) {
         if (type == FuncListDisp_type.DSP_FUNCTION.value) {
